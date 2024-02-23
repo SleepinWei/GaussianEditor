@@ -438,7 +438,7 @@ class GaussianEditor(BaseLift3DSystem):
             f"it{self.true_global_step}-test",
             f"it{self.true_global_step}-test",
             "(\d+)\.png",
-            save_format="mp4",
+            save_format="gif",
             fps=2,
             name="test",
             step=self.true_global_step,

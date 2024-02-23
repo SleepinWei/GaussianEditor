@@ -24,8 +24,10 @@
 #include <torch/extension.h>
 #include <tuple>
 
-std::function<char *(size_t N)> resizeFunctional(torch::Tensor &t) {
-  auto lambda = [&t](size_t N) {
+std::function<char *(size_t N)> resizeFunctional(torch::Tensor &t)
+{
+  auto lambda = [&t](size_t N)
+  {
     t.resize_({(long long)N});
     return reinterpret_cast<char *>(t.contiguous().data_ptr());
   };
@@ -42,8 +44,10 @@ RasterizeGaussiansCUDA(
     const torch::Tensor &viewmatrix, const torch::Tensor &projmatrix,
     const float tan_fovx, const float tan_fovy, const int image_height,
     const int image_width, const torch::Tensor &sh, const int degree,
-    const torch::Tensor &campos, const bool prefiltered, const bool debug) {
-  if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
+    const torch::Tensor &campos, const bool prefiltered, const bool debug)
+{
+  if (means3D.ndimension() != 2 || means3D.size(1) != 3)
+  {
     AT_ERROR("means3D must have dimensions (num_points, 3)");
   }
 
@@ -69,9 +73,11 @@ RasterizeGaussiansCUDA(
   std::function<char *(size_t)> imgFunc = resizeFunctional(imgBuffer);
 
   int rendered = 0;
-  if (P != 0) {
+  if (P != 0)
+  {
     int M = 0;
-    if (sh.size(0) != 0) {
+    if (sh.size(0) != 0)
+    {
       M = sh.size(1);
     }
 
@@ -107,13 +113,15 @@ RasterizeGaussiansBackwardCUDA(
     const int degree, const torch::Tensor &campos,
     const torch::Tensor &geomBuffer, const int R,
     const torch::Tensor &binningBuffer, const torch::Tensor &imageBuffer,
-    const bool debug) {
+    const bool debug)
+{
   const int P = means3D.size(0);
   const int H = dL_dout_color.size(1);
   const int W = dL_dout_color.size(2);
 
   int M = 0;
-  if (sh.size(0) != 0) {
+  if (sh.size(0) != 0)
+  {
     M = sh.size(1);
   }
 
@@ -127,7 +135,8 @@ RasterizeGaussiansBackwardCUDA(
   torch::Tensor dL_dscales = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options());
 
-  if (P != 0) {
+  if (P != 0)
+  {
     CudaRasterizer::Rasterizer::backward(
         P, degree, M, R, background.contiguous().data<float>(), W, H,
         means3D.contiguous().data<float>(), sh.contiguous().data<float>(),
@@ -157,13 +166,15 @@ RasterizeGaussiansBackwardCUDA(
 }
 
 torch::Tensor markVisible(torch::Tensor &means3D, torch::Tensor &viewmatrix,
-                          torch::Tensor &projmatrix) {
+                          torch::Tensor &projmatrix)
+{
   const int P = means3D.size(0);
 
   torch::Tensor present =
       torch::full({P}, false, means3D.options().dtype(at::kBool));
 
-  if (P != 0) {
+  if (P != 0)
+  {
     CudaRasterizer::Rasterizer::markVisible(
         P, means3D.contiguous().data<float>(),
         viewmatrix.contiguous().data<float>(),
@@ -183,8 +194,10 @@ void applyWeightsGaussiansCUDA(
     const float tan_fovx, const float tan_fovy, const int image_height,
     const int image_width, const torch::Tensor &sh, const int degree,
     const torch::Tensor &campos, const bool prefiltered,
-    const torch::Tensor &image_weights, torch::Tensor &cnt, const bool debug) {
-  if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
+    const torch::Tensor &image_weights, torch::Tensor &cnt, const bool debug)
+{
+  if (means3D.ndimension() != 2 || means3D.size(1) != 3)
+  {
     AT_ERROR("means3D must have dimensions (num_points, 3)");
   }
   const int P = means3D.size(0);
@@ -210,9 +223,11 @@ void applyWeightsGaussiansCUDA(
   std::function<char *(size_t)> binningFunc = resizeFunctional(binningBuffer);
   std::function<char *(size_t)> imgFunc = resizeFunctional(imgBuffer);
 
-  if (P != 0) {
+  if (P != 0)
+  {
     int M = 0;
-    if (sh.size(0) != 0) {
+    if (sh.size(0) != 0)
+    {
       M = sh.size(1);
     }
 

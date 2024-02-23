@@ -20,7 +20,7 @@ class InstructPix2PixGuidance(BaseObject):
     @dataclass
     class Config(BaseObject.Config):
         cache_dir: Optional[str] = None
-        ddim_scheduler_name_or_path: str = "CompVis/stable-diffusion-v1-4"
+        ddim_scheduler_name_or_path: str = "runwayml/stable-diffusion-v1-5"
         ip2p_name_or_path: str = "timbrooks/instruct-pix2pix"
 
         enable_memory_efficient_attention: bool = False
