@@ -79,6 +79,8 @@ class GaussianModel:
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
+        self._language_feature = None # ZYW torch.empty(0)
+
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
@@ -107,21 +109,39 @@ class GaussianModel:
             [self.anchor_weight_init_g0], device="cuda"
         )  # generation 0 begin from weight 0
 
-    def capture(self):
-        return (
-            self.active_sh_degree,
-            self._xyz,
-            self._features_dc,
-            self._features_rest,
-            self._scaling,
-            self._rotation,
-            self._opacity,
-            self.max_radii2D,
-            self.xyz_gradient_accum,
-            self.denom,
-            self.optimizer.state_dict(),
-            self.spatial_lr_scale,
-        )
+    def capture(self, include_feature=False):
+        if include_feature:
+            assert self._language_feature is not None, "没有设置language feature"
+            return (
+                self.active_sh_degree,
+                self._xyz,
+                self._features_dc,
+                self._features_rest,
+                self._scaling,
+                self._rotation,
+                self._opacity,
+                self._language_feature,
+                self.max_radii2D,
+                self.xyz_gradient_accum,
+                self.denom,
+                self.optimizer.state_dict(),
+                self.spatial_lr_scale,
+            )
+        else:
+            return (
+                self.active_sh_degree,
+                self._xyz,
+                self._features_dc,
+                self._features_rest,
+                self._scaling,
+                self._rotation,
+                self._opacity,
+                self.max_radii2D,
+                self.xyz_gradient_accum,
+                self.denom,
+                self.optimizer.state_dict(),
+                self.spatial_lr_scale,
+            )
 
     def update_anchor(self):
         self.anchor = dict(
@@ -184,24 +204,41 @@ class GaussianModel:
         return out
 
     def restore(self, model_args, training_args):
-        (
-            self.active_sh_degree,
-            self._xyz,
-            self._features_dc,
+        if len(model_args) == 13: # 这是一个feature训练时保存的ckpt
+            (self.active_sh_degree, 
+            self._xyz, 
+            self._features_dc, 
             self._features_rest,
-            self._scaling,
-            self._rotation,
+            self._scaling, 
+            self._rotation, 
             self._opacity,
-            self.max_radii2D,
-            xyz_gradient_accum,
+            self._language_feature,
+            self.max_radii2D, 
+            xyz_gradient_accum, 
             denom,
-            opt_dict,
-            self.spatial_lr_scale,
-        ) = model_args
-        # self.training_setup(training_args)
+            opt_dict, 
+            self.spatial_lr_scale) = model_args
+        elif len(model_args) == 12: # 这是一个不训练feature保存的ckpt
+            (
+                self.active_sh_degree,
+                self._xyz,
+                self._features_dc,
+                self._features_rest,
+                self._scaling,
+                self._rotation,
+                self._opacity,
+                self.max_radii2D,
+                xyz_gradient_accum,
+                denom,
+                opt_dict,
+                self.spatial_lr_scale,
+            ) = model_args
+        # self.training_setup(training_args) ZYW: 为什么注释了，在哪里调用
+        # pytorch lightning 有个 restore_training_state() 的函数，可能在那里调用了
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
-        self.optimizer.load_state_dict(opt_dict)
+        if not training_args.include_feature:
+            self.optimizer.load_state_dict(opt_dict)
 
     def prune_with_mask(self, new_mask=None):
         self.prune_points(self.mask)  # all the mask with value 1 are pruned
@@ -256,6 +293,13 @@ class GaussianModel:
             return self.opacity_activation(self._opacity[self.mask])
         else:
             return self.opacity_activation(self._opacity)
+    
+    @property
+    def get_language_feature(self):
+        if self._language_feature is not None:
+            return self._language_feature
+        else:
+            raise ValueError('没有设置language feature')
 
     def get_covariance(self, scaling_modifier=1):
         if self.localize:
@@ -337,39 +381,59 @@ class GaussianModel:
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-
-        l = [
-            {
-                "params": [self._xyz],
-                "lr": training_args.position_lr_init * self.spatial_lr_scale,
-                "name": "xyz",
-            },
-            {
-                "params": [self._features_dc],
-                "lr": training_args.feature_lr,
-                "name": "f_dc",
-            },
-            {
-                "params": [self._features_rest],
-                "lr": training_args.feature_lr / 20.0,
-                "name": "f_rest",
-            },
-            {
-                "params": [self._opacity],
-                "lr": training_args.opacity_lr,
-                "name": "opacity",
-            },
-            {
-                "params": [self._scaling],
-                "lr": training_args.scaling_lr,
-                "name": "scaling",
-            },
-            {
-                "params": [self._rotation],
-                "lr": training_args.rotation_lr,
-                "name": "rotation",
-            },
-        ]
+        if training_args.include_feature:
+            if self._language_feature is None or self._language_feature.shape[0] != self._xyz.shape[0]:
+                # 开始feature训练的时候，往模型中加入language feature参数
+                language_feature = torch.zeros((self._xyz.shape[0], 3), device="cuda")
+                self._language_feature = nn.Parameter(language_feature.requires_grad_(True))
+                
+            l = [
+                {
+                    'params': [self._language_feature], 
+                    'lr': training_args.language_feature_lr, 
+                    "name": "language_feature"
+                }, # TODO: training_args.language_feature_lr
+            ]
+            self._xyz.requires_grad_(False)
+            self._features_dc.requires_grad_(False)
+            self._features_rest.requires_grad_(False)
+            self._scaling.requires_grad_(False)
+            self._rotation.requires_grad_(False)
+            self._opacity.requires_grad_(False)
+        else:
+            l = [
+                {
+                    "params": [self._xyz],
+                    "lr": training_args.position_lr_init * self.spatial_lr_scale,
+                    "name": "xyz",
+                },
+                {
+                    "params": [self._features_dc],
+                    "lr": training_args.feature_lr,
+                    "name": "f_dc",
+                },
+                {
+                    "params": [self._features_rest],
+                    "lr": training_args.feature_lr / 20.0,
+                    "name": "f_rest",
+                },
+                {
+                    "params": [self._opacity],
+                    "lr": training_args.opacity_lr,
+                    "name": "opacity",
+                },
+                {
+                    "params": [self._scaling],
+                    "lr": training_args.scaling_lr,
+                    "name": "scaling",
+                },
+                {
+                    "params": [self._rotation],
+                    "lr": training_args.rotation_lr,
+                    "name": "rotation",
+                },
+            ]
+            assert self._language_feature is None, "在训练原始gs的时候language feature应该始终为None"
         self.params_list = l
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(
@@ -806,7 +870,7 @@ class GaussianModel:
         self.update_anchor()
         self.update_anchor_loss_schedule()
 
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache() ZYW: 
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(
@@ -815,8 +879,9 @@ class GaussianModel:
         self.denom[update_filter] += 1
 
     def apply_weights(self, camera, weights, weights_cnt, image_weights):
+        # ZYW TODO: include_feature 写死了，以及重新看下 apply_weights 的实现
         rasterizer = camera2rasterizer(
-            camera, torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32, device="cuda")
+            camera, torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32, device="cuda"),include_feature=False
         )
         rasterizer.apply_weights(
             self.get_xyz,
@@ -827,6 +892,7 @@ class GaussianModel:
             self.get_scaling,
             self.get_rotation,
             None,
+            None, # language_feature_precomp
             weights_cnt,
             image_weights,
         )
@@ -846,7 +912,7 @@ class GaussianModel:
             # print(final_grad.abs().mean())
             return final_grad
 
-        fields = ["_xyz", "_features_dc", "_features_rest", "_opacity", "_scaling"]
+        fields = ["_xyz", "_features_dc", "_features_rest", "_opacity", "_scaling"] # ZYW: "_language_feature"]
 
         self.hooks = []
 

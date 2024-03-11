@@ -13,6 +13,7 @@
 #include "forward.h"
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
+#include <stdio.h>
 namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
@@ -207,12 +208,12 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	}
 	else
 	{
-		computeCov3D(scales[idx], scale_modifier, rotations[idx], cov3Ds + idx * 6);
+		computeCov3D(scales[idx], scale_modifier, rotations[idx], cov3Ds + idx * 6); // Eq. (6)
 		cov3D = cov3Ds + idx * 6;
 	}
 
 	// Compute 2D screen-space covariance matrix
-	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
+	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix); // Eq. (5)
 
 	// Invert covariance (EWA algorithm)
 	float det = (cov.x * cov.z - cov.y * cov.y);
@@ -257,7 +258,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 // Main rasterization method. Collaboratively works on one tile per
 // block, each thread treats one pixel. Alternates between fetching
 // and rasterizing data.
-template <uint32_t CHANNELS>
+template <uint32_t CHANNELS, uint32_t CHANNELS_language_feature>
 __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 	renderCUDA(
 		const uint2 *__restrict__ ranges,
@@ -265,13 +266,16 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 		int W, int H,
 		const float2 *__restrict__ points_xy_image,
 		const float *__restrict__ features,
+		const float *__restrict__ language_feature,
 		const float *__restrict__ depths,
 		const float4 *__restrict__ conic_opacity,
 		float *__restrict__ final_T,
 		uint32_t *__restrict__ n_contrib,
 		const float *__restrict__ bg_color,
 		float *__restrict__ out_color,
-		float *__restrict__ out_depth)
+		float *__restrict__ out_language_feature,
+		float *__restrict__ out_depth,
+		bool include_feature)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -281,6 +285,11 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 	uint2 pix = {pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y};
 	uint32_t pix_id = W * pix.y + pix.x;
 	float2 pixf = {(float)pix.x, (float)pix.y};
+
+	// if (block.group_index().x == 0 && block.group_index().y == 0 && block.thread_index().x == 0 && block.thread_index().y == 0)
+	// {
+	// 	printf("language feature 的最后一个数看能不能取到 %.2f \n", language_feature[2354542 * CHANNELS_language_feature + CHANNELS_language_feature-1]);
+	// }
 
 	// Check if this thread is associated with a valid pixel or outside.
 	bool inside = pix.x < W && pix.y < H;
@@ -302,6 +311,7 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = {0};
+	float F[CHANNELS_language_feature] = {0};
 	float D = {0};
 
 	// Iterate over batches until all done or range is complete
@@ -342,7 +352,7 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix).
-			float alpha = min(0.99f, con_o.w * exp(power));
+			float alpha = min(0.99f, con_o.w * exp(power)); // opacity * G(x)
 			if (alpha < 1.0f / 255.0f)
 				continue;
 			float test_T = T * (1 - alpha);
@@ -356,6 +366,12 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 			D += depths[collected_id[j]] * alpha * T;
+
+			if (include_feature)
+			{
+				for (int ch = 0; ch < CHANNELS_language_feature; ch++)
+					F[ch] += language_feature[collected_id[j] * CHANNELS_language_feature + ch] * alpha * T;
+			}
 
 			T = test_T;
 
@@ -373,7 +389,14 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 		n_contrib[pix_id] = last_contributor;
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+
 		out_depth[pix_id] = D;
+
+		if (include_feature)
+		{
+			for (int ch = 0; ch < CHANNELS_language_feature; ch++)
+				out_language_feature[ch * H * W + pix_id] = F[ch]; // bg_color ???
+		}
 	}
 }
 
@@ -384,27 +407,41 @@ void FORWARD::render(
 	int W, int H,
 	const float2 *means2D,
 	const float *colors,
+	const float *language_feature,
 	const float *depths,
 	const float4 *conic_opacity,
 	float *final_T,
 	uint32_t *n_contrib,
 	const float *bg_color,
 	float *out_color,
-	float *out_depth)
+	float *out_language_feature,
+	float *out_depth,
+	bool include_feature)
 {
-	renderCUDA<NUM_CHANNELS><<<grid, block>>>(
+	// clock_t start = clock();
+	// printf("一共有 %d x %d 个block, %d x %d 个线程\n", grid.x, grid.y, block.x, block.y);
+	renderCUDA<NUM_CHANNELS, NUM_CHANNELS_language_feature><<<grid, block>>>(
 		ranges,
 		point_list,
 		W, H,
 		means2D,
 		colors,
+		language_feature,
 		depths,
 		conic_opacity,
 		final_T,
 		n_contrib,
 		bg_color,
 		out_color,
-		out_depth);
+		out_language_feature,
+		out_depth,
+		include_feature);
+
+	// cudaDeviceSynchronize();
+
+	// clock_t finish = clock();
+	// double duration = (double)(finish - start) / CLOCKS_PER_SEC * 1000;
+	// printf( "--------in cuda forward的运行时间为： %f ms\n", duration );
 }
 
 void FORWARD::preprocess(int P, int D, int M,

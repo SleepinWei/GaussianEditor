@@ -51,7 +51,6 @@ namespace APPLY_WEIGHTS
 		const float* image_weights,
 		int *cnt,
 		const int num_channels);
-}
-
+};
 
 #endif

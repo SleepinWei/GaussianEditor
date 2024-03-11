@@ -203,3 +203,5 @@ exp/
 !threestudio/utils/wonder3D/mvdiffusion/data
 tmp_add/
 dataset/
+*.dump
+*.txt

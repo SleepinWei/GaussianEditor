@@ -65,6 +65,9 @@ class GaussianEditor(BaseLift3DSystem):
         anchor_weight_multiplier: float = 2
         training_args: dict = field(default_factory=dict)
 
+        # ZYW: Langsplat
+        include_feature: bool= False
+
     cfg: Config
 
     def configure(self) -> None:
@@ -103,7 +106,7 @@ class GaussianEditor(BaseLift3DSystem):
                     mask_cache_dir, "viz_{:0>4d}.png".format(id)
                 )
 
-                cur_cam = self.trainer.datamodule.train_dataset.scene.cameras[id]
+                cur_cam = self.trainer.datamodule.train_dataset.scene.cameras[id] # ZYW: 获取 camera 的方法
 
                 mask = self.text_segmentor(self.origin_frames[id], self.cfg.seg_prompt)[
                     0
@@ -130,6 +133,8 @@ class GaussianEditor(BaseLift3DSystem):
                 )
                 cv2.imwrite(cur_path_viz, masked_image_to_save)
                 self.gaussian.apply_weights(cur_cam, weights, weights_cnt, mask)
+                # apply_weights 相当于 render，但是只有 weights 和 cnt 改变，不产生图像？
+                # 这里的weights的维度和gaussian个数相同,相当于每个点的 T，不是 sigma
 
             weights /= weights_cnt + 1e-7
 
@@ -160,10 +165,10 @@ class GaussianEditor(BaseLift3DSystem):
         semantics = []
         masks = []
         self.viewspace_point_list = []
-        self.gaussian.localize = local
+        self.gaussian.localize = local # ZYW ?: local 是什么含义
 
         for id, cam in enumerate(batch["camera"]):
-            render_pkg = render(cam, self.gaussian, self.pipe, renderbackground)
+            render_pkg = render(cam, self.gaussian, self.pipe, renderbackground, self.cfg.include_feature)
             image, viewspace_point_tensor, _, radii = (
                 render_pkg["render"],
                 render_pkg["viewspace_points"],
@@ -180,11 +185,13 @@ class GaussianEditor(BaseLift3DSystem):
             depth = render_pkg["depth_3dgs"]
             depth = depth.permute(1, 2, 0)
 
+            # override_color 设定后，不在mask区域着色为0，在mask内着色为1
             semantic_map = render(
                 cam,
                 self.gaussian,
                 self.pipe,
                 renderbackground,
+                self.cfg.include_feature,
                 override_color=self.gaussian.mask[..., None].float().repeat(1, 3),
             )["render"]
             semantic_map = torch.norm(semantic_map, dim=0)
@@ -485,7 +492,7 @@ class GaussianEditor(BaseLift3DSystem):
         self.view_list = self.trainer.datamodule.train_dataset.n2n_view_index
         self.view_num = len(self.view_list)
         opt = OptimizationParams(self.parser, self.trainer.max_steps, self.cfg.gs_lr_scaler, self.cfg.gs_final_lr_scaler, self.cfg.color_lr_scaler,
-                                 self.cfg.opacity_lr_scaler, self.cfg.scaling_lr_scaler, self.cfg.rotation_lr_scaler, )
+                                 self.cfg.opacity_lr_scaler, self.cfg.scaling_lr_scaler, self.cfg.rotation_lr_scaler, self.cfg.include_feature)
         self.gaussian.load_ply(self.cfg.gs_source)
         self.gaussian.max_radii2D = torch.zeros(
             (self.gaussian.get_xyz.shape[0]), device="cuda"

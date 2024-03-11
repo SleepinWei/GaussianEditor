@@ -88,6 +88,9 @@ from threestudio.utils.transform import (
 
 class WebUI:
     def __init__(self, cfg) -> None:
+        # ZYW DEBUG
+        # torch.cuda.memory._record_memory_history()
+
         self.gs_source = cfg.gs_source
         self.colmap_dir = cfg.colmap_dir
         self.port = 8084
@@ -690,7 +693,8 @@ class WebUI:
     ) -> Dict[str, Any]:
         self.gaussian.localize = local
 
-        render_pkg = render(cam, self.gaussian, self.pipe, self.background_tensor)
+        # ZYW: include_feature = False
+        render_pkg = render(cam, self.gaussian, self.pipe, self.background_tensor, False)
         image, viewspace_point_tensor, _, radii = (
             render_pkg["render"],
             render_pkg["viewspace_points"],
@@ -702,11 +706,13 @@ class WebUI:
             self.radii = radii
             self.visibility_filter = self.radii > 0.0
 
+        # ZYW: include_feature = False
         semantic_map = render(
             cam,
             self.gaussian,
             self.pipe,
             self.background_tensor,
+            include_feature=False,
             override_color=self.gaussian.mask[..., None].float().repeat(1, 3),
         )["render"]
         semantic_map = torch.norm(semantic_map, dim=0)
@@ -761,7 +767,8 @@ class WebUI:
         for idx in tqdm(view_index):
             cur_cam = self.colmap_cameras[idx]
             this_frame = render(
-                cur_cam, self.gaussian, self.pipe, self.background_tensor
+                cur_cam, self.gaussian, self.pipe, self.background_tensor,
+                include_feature=False
             )["render"]
 
             # breakpoint()
@@ -983,6 +990,7 @@ class WebUI:
                 out_img = output["semantic"][0].moveaxis(0, -1)
         elif out_key == "masks":
             out_img = output["masks"][0].to(torch.float32)[..., None].repeat(1, 1, 3)
+
         if out_img.dtype == torch.float32:
             out_img = out_img.clamp(0, 1)
             out_img = (out_img * 255).to(torch.uint8).cpu().to(torch.uint8)
@@ -1173,6 +1181,10 @@ class WebUI:
             server=self.server,
         )
         view_index_stack = list(range(len(edit_cameras)))
+
+        # ZYW: mixed precision
+        scaler = torch.cuda.amp.GradScaler()
+
         for step in tqdm(range(self.edit_train_steps.value)):
             if not view_index_stack:
                 view_index_stack = list(range(len(edit_cameras)))
@@ -1181,13 +1193,21 @@ class WebUI:
 
             rendering = self.render(edit_cameras[view_index], train=True)["comp_rgb"]
 
-            loss = self.guidance(rendering, view_index, step)
-            loss.backward()
+            with torch.cuda.amp.autocast():
+                loss = self.guidance(rendering, view_index, step)
+
+            # loss.backward()
+            scaler.scale(loss).backward()
 
             self.densify_and_prune(step)
 
-            self.gaussian.optimizer.step()
+            scaler.step(self.gaussian.optimizer) # .step()
+            scaler.update() 
+
             self.gaussian.optimizer.zero_grad(set_to_none=True)
+
+            # ZYW DEBUG
+            # torch.cuda.memory._dump_snapshot("./outputs/my_snapshot.pickle")
             if self.stop_training:
                 self.stop_training = False
                 return

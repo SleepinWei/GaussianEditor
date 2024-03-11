@@ -84,11 +84,16 @@ class GaussianEditor_Edit(GaussianEditor):
                         < self.cfg.edit_until_step
                         and self.global_step % self.cfg.per_editing_step == 0
                 ):
+                    # import torchshow as ts
+                    # ts.save(images[img_index])
+                    # ts.save(self.origin_frames[cur_index])
+
                     result = self.guidance(
                         images[img_index][None],
                         self.origin_frames[cur_index],
                         prompt_utils,
                     )
+                    # ts.save(result["edit_images"])
 
                     self.edit_frames[cur_index] = result["edit_images"].detach().clone()
                     # print("edited image index", cur_index)

@@ -175,12 +175,12 @@ def main(args, extras) -> None:
         )()
 
     trainer = Trainer(
-        callbacks=callbacks,
-        logger=loggers,
+        callbacks=callbacks, # ModelCheckpoint; LearningRateMonitor; ConfigSnapshotCallback
+        logger=loggers, # TensorBoard, CSV, WandbLogger
         inference_mode=False,
         accelerator="gpu",
         devices=devices,
-        **cfg.trainer,
+        **cfg.trainer, # trainer settings. 
     )
 
     def set_system_status(system: BaseSystem, ckpt_path: Optional[str]):

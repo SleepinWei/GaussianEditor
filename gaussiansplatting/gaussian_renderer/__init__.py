@@ -18,7 +18,7 @@ from diff_gaussian_rasterization import (
 from gaussiansplatting.utils.sh_utils import eval_sh
 
 
-def camera2rasterizer(viewpoint_camera, bg_color: torch.Tensor, sh_degree: int = 0):
+def camera2rasterizer(viewpoint_camera, bg_color: torch.Tensor, include_feature, sh_degree: int = 0):
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
@@ -35,6 +35,7 @@ def camera2rasterizer(viewpoint_camera, bg_color: torch.Tensor, sh_degree: int =
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=False,
+        include_feature=include_feature
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -47,6 +48,7 @@ def render(
     pc,
     pipe,
     bg_color: torch.Tensor,
+    include_feature =False, # ZYW: default include_feature
     scaling_modifier=1.0,
     override_color=None,
 ):
@@ -84,7 +86,8 @@ def render(
         sh_degree=pc.active_sh_degree,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
-        debug=False,
+        debug=True, # ZYW DEBUG 
+        include_feature=include_feature
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -125,25 +128,40 @@ def render(
         shs = shs.float()
     else:
         colors_precomp = override_color
+    
+    if include_feature:
+        language_feature_precomp = pc.get_language_feature
+        language_feature_precomp = language_feature_precomp / \
+            (language_feature_precomp.norm(dim=-1, keepdim=True) + 1e-9)
+        # language_feature_precomp = torch.sigmoid(language_feature_precomp)
+    else:
+        if shs is not None: # ZYW DEBUG when rendering semantic map, shs = None
+            language_feature_precomp = torch.zeros(
+                (shs.shape[0],3), dtype=opacity.dtype, device=opacity.device)
+        else:
+            language_feature_precomp = torch.zeros(
+                (3), dtype=opacity.dtype, device=opacity.device)
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
     # import pdb; pdb.set_trace()
     values = rasterizer(
-        means3D=means3D.float(),
-        means2D=means2D.float(),
+        means3D=means3D,
+        means2D=means2D,
         shs=shs,
         colors_precomp=colors_precomp,
-        opacities=opacity.float(),
-        scales=scales.float(),
-        rotations=rotations.float(),
+        language_feature_precomp=language_feature_precomp,
+        opacities=opacity,
+        scales=scales,
+        rotations=rotations,
         cov3D_precomp=cov3D_precomp,
     )
-    rendered_image, radii, depth = values  # ZYW no depth, where's the depth? : rendered_image, radii, depth = values
+    rendered_image, language_feature_image, depth, radii = values
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     return {
         "render": rendered_image,
+        "language_feature_image": language_feature_image,
         "viewspace_points": screenspace_points,
         "visibility_filter": radii > 0,
         "radii": radii,
@@ -163,7 +181,8 @@ def point_cloud_render(
     override_color=None,
 ):
     screenspace_points = (
-        torch.zeros_like(xyz, dtype=xyz.dtype, requires_grad=True, device="cuda") + 0
+        torch.zeros_like(xyz, dtype=xyz.dtype,
+                         requires_grad=True, device="cuda") + 0
     )
     try:
         screenspace_points.retain_grad()
@@ -187,6 +206,7 @@ def point_cloud_render(
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=False,
+        include_feature=False
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -201,7 +221,8 @@ def point_cloud_render(
     rotations = None
     cov3D_precomp = None
     scales = torch.ones_like(xyz) * 0.005
-    rotations = torch.zeros([xyz.shape[0], 4], dtype=xyz.dtype, device=xyz.device)
+    rotations = torch.zeros(
+        [xyz.shape[0], 4], dtype=xyz.dtype, device=xyz.device)
     rotations[..., 0] = 1.0
 
     # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
@@ -229,7 +250,7 @@ def point_cloud_render(
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
     # import pdb; pdb.set_trace()
-    rendered_image, radii, depth = rasterizer(
+    rendered_image, language_feature, depth,radii = rasterizer(
         means3D=means3D.float(),
         means2D=means2D.float(),
         shs=shs,
