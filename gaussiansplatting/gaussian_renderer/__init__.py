@@ -35,7 +35,8 @@ def camera2rasterizer(viewpoint_camera, bg_color: torch.Tensor, include_feature,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=False,
-        include_feature=include_feature
+        # include_feature=include_feature
+        Ld_value=Ld_value
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -51,6 +52,8 @@ def render(
     include_feature =False, # ZYW: default include_feature
     scaling_modifier=1.0,
     override_color=None,
+    sky=None,
+    Ld_value = None
 ):
     """
     Render the scene.
@@ -70,6 +73,8 @@ def render(
     except:
         pass
 
+    if Ld_value is None:
+        Ld_value = torch.zeros(1, 3, dtype=torch.float32, device="cuda")
     # Set up rasterization configuration
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
@@ -87,7 +92,8 @@ def render(
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=True, # ZYW DEBUG 
-        include_feature=include_feature
+        # include_feature=include_feature
+        Ld_value=Ld_value
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -149,23 +155,49 @@ def render(
         means2D=means2D,
         shs=shs,
         colors_precomp=colors_precomp,
-        language_feature_precomp=language_feature_precomp,
+        # language_feature_precomp=language_feature_precomp,
         opacities=opacity,
         scales=scales,
         rotations=rotations,
         cov3D_precomp=cov3D_precomp,
     )
-    rendered_image, language_feature_image, depth, radii = values
-
+    # rendered_image, language_feature_image, depth, alpha,radii= values
+    # rendered_image, radii, depth, alpha, normal, ray_P, ray_M = values
+    rendered_image, radii, depth, alpha, normal, distortion, ray_P, ray_M = values
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
+    if pipe.enable_sky and sky is not None:
+        # get dirs 
+        from gaussiansplatting.utils.camera_utils import get_ray_directions
+        dirs = get_ray_directions(viewpoint_camera.image_width,viewpoint_camera.image_height,(viewpoint_camera.FoVx,viewpoint_camera.FoVy),(viewpoint_camera.image_width/2,viewpoint_camera.image_height/2))
+        world_dirs = torch.bmm(torch.inverse(viewpoint_camera.world_view_transform).repeat(dirs.shape[0] * dirs.shape[1],1,1) , dirs.reshape((-1,4)).unsqueeze(-1)).squeeze(-1)
+        # world_dirs /= torch.norm(world_dirs,dim=-1,keepdim=True)
+
+        sky_mask = (alpha < 0.95)[0]
+        sky_image = sky(world_dirs[sky_mask.flatten()][:,:3]).permute(1,0)
+        # image_sky_mask = sky_mask.reshape((viewpoint_camera.image_height,viewpoint_camera.image_width))
+        rendered_image[:,sky_mask] += (1-alpha[0][sky_mask]) * sky_image
+
+        # debug 
+        # import matplotlib.pyplot as plt
+        # import torchshow as ts
+        # plt.scatter(dirs[:,:,1].flatten().cpu().numpy(),dirs[:,:,2].flatten().cpu().numpy(),s=1)
+        # plt.savefig("./vis/cam_dirs.jpg")
+        # ts.save(sky_mask.float().repeat(3,1,1),"./vis/image_sky_mask.jpg")
+        # ts.save(rendered_image,"./vis/image_sky.jpg")
+
     return {
         "render": rendered_image,
-        "language_feature_image": language_feature_image,
+        # "language_feature_image": language_feature_image,
+        "normal" : normal, 
         "viewspace_points": screenspace_points,
         "visibility_filter": radii > 0,
         "radii": radii,
+        "opacity" : alpha,
         "depth_3dgs": depth,
+        "ray_P": ray_P,
+        "ray_M": ray_M,
+        "distortion": distortion
     }
 
 

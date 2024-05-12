@@ -9,7 +9,6 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -32,6 +31,7 @@ from gaussiansplatting.utils.general_utils import (
 from gaussiansplatting.gaussian_renderer import camera2rasterizer
 
 from gaussiansplatting.knn import K_nearest_neighbors
+from gaussiansplatting.scene.sky_model import SkyModel
 
 # from threestudio.utils.typing import Bool, Tensor
 
@@ -81,6 +81,8 @@ class GaussianModel:
         self._opacity = torch.empty(0)
         self._language_feature = None # ZYW torch.empty(0)
 
+
+
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
@@ -90,6 +92,48 @@ class GaussianModel:
         self.setup_functions()
         self.anchor = {}
         self.localize = False
+    
+    def from_models(
+            self,
+            gms:dict # gaussian models
+            # sh_degree: int,
+            # anchor_weight_init_g0: float,
+            # anchor_weight_init: float,
+            # anchor_weight_multiplier: float,
+    ):
+        if len(gms) == 0 :
+            return 
+
+        models = [v for k,v in gms.items()]
+
+        self.active_sh_degree = models[0].active_sh_degree
+        self.anchor_weight_init = models[0].anchor_weight_init
+        self.anchor_weight_multiplier = models[0].anchor_weight_multiplier
+        # self._anchor_loss_schedule = torch.tensor(
+            # [anchor_weight_init_g0], device="cuda"
+        # )  # generation 0 begin from weight 0
+        # self.anchor_weight_init_g0 = anchor_weight_init_g0
+        # self._anchor_loss_schedule[x] = y means weight y will be multiplied to the anchor loss of generation x
+        # self.max_sh_degree = sh_degree
+        self._generation = torch.empty(0)  # begin from 0
+        self._xyz = torch.vstack([model.get_xyz for model in models])# torch.empty(0)
+        self._features_dc = torch.vstack([model.get_features_dc for model in models])# torch.empty(0)
+        self._features_rest =torch.vstack([model.get_features_rest for model in models])# torch.empty(0)
+
+        self._scaling = torch.vstack([model.get_orig_scaling for model in models])# torch.empty(0)
+        self._rotation = torch.vstack([model.get_orig_rotation for model in models])# torch.empty(0)
+        self._opacity = torch.vstack([model.get_orig_opacity for model in models])# torch.empty(0)
+        self._language_feature = torch.zeros_like(self._opacity)# ZYW torch.empty(0)
+
+        self.set_mask(
+            torch.ones(
+                self._opacity.shape[0],
+                dtype=torch.bool,
+                device="cuda",
+                requires_grad=False,
+            )
+        )
+        # self.apply_grad_mask(self.mask) DEBUG 没有 gradient mask
 
     def update_anchor_term(self, anchor_weight_init_g0: float,
                            anchor_weight_init: float,
@@ -203,7 +247,7 @@ class GaussianModel:
                 raise
         return out
 
-    def restore(self, model_args, training_args):
+    def restore(self, model_args, training_args,additional):
         if len(model_args) == 13: # 这是一个feature训练时保存的ckpt
             (self.active_sh_degree, 
             self._xyz, 
@@ -218,7 +262,7 @@ class GaussianModel:
             denom,
             opt_dict, 
             self.spatial_lr_scale) = model_args
-        elif len(model_args) == 12: # 这是一个不训练feature保存的ckpt
+        elif len(model_args) == 12: # 这是一个没有 lang feature的ckpt
             (
                 self.active_sh_degree,
                 self._xyz,
@@ -233,13 +277,20 @@ class GaussianModel:
                 opt_dict,
                 self.spatial_lr_scale,
             ) = model_args
-        # self.training_setup(training_args) ZYW: 为什么注释了，在哪里调用
+            # ZYW: include_feature 表示训练时是否要包含 feature
+            self.training_setup(training_args,additional=additional) # ZYW: 为什么注释了，在哪里调用
+            if not training_args.include_feature:
+                try:
+                    self.optimizer.load_state_dict(opt_dict) # 应该是在判断 是否重新开始训练
+                except:
+                    print("[WARNING]restore(): Gaussian checkpoint restore error. May be an issue with appearance embeding")
         # pytorch lightning 有个 restore_training_state() 的函数，可能在那里调用了
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
-        if not training_args.include_feature:
-            self.optimizer.load_state_dict(opt_dict)
-
+        # ZYW: set mask 
+        self.mask = torch.ones(self._opacity.shape[0],dtype=torch.bool,device="cuda")
+        self._generation = torch.zeros(self._opacity.shape[0],dtype=torch.bool,device="cuda")
+        
     def prune_with_mask(self, new_mask=None):
         self.prune_points(self.mask)  # all the mask with value 1 are pruned
         if new_mask is not None:
@@ -249,7 +300,6 @@ class GaussianModel:
         self.remove_grad_mask()
         self.apply_grad_mask(self.mask)
         self.update_anchor()
-
 
     @property
     def generation_num(self):
@@ -263,11 +313,26 @@ class GaussianModel:
             return self.scaling_activation(self._scaling)
 
     @property
+    def get_orig_scaling(self):
+        if self.localize:
+            return self._scaling[self.mask]
+        else:
+            return self._scaling
+
+    @property
     def get_rotation(self):
         if self.localize:
             return self.rotation_activation(self._rotation[self.mask])
         else:
             return self.rotation_activation(self._rotation)
+
+    @property
+    def get_orig_rotation(self):
+        if self.localize:
+            return self._rotation[self.mask]
+        else:
+            return self._rotation
+
 
     @property
     def get_xyz(self):
@@ -288,11 +353,33 @@ class GaussianModel:
         return torch.cat((features_dc, features_rest), dim=1)
 
     @property
+    def get_features_dc(self):
+        if self.localize:
+            return self._features_dc[self.mask]
+        else:
+            return self._features_dc
+
+    @property
+    def get_features_rest(self):
+        if self.localize:
+            return self._features_rest[self.mask]
+        else:
+            return self._features_rest
+
+    @property
     def get_opacity(self):
         if self.localize:
             return self.opacity_activation(self._opacity[self.mask])
         else:
             return self.opacity_activation(self._opacity)
+
+    @property
+    def get_orig_opacity(self):
+        if self.localize:
+            return self._opacity[self.mask]
+        else:
+            return self._opacity
+    
     
     @property
     def get_language_feature(self):
@@ -337,15 +424,15 @@ class GaussianModel:
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
 
-        # opacities = inverse_sigmoid(
-        #     1.0
-        #     * torch.ones(
-        #         (fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"
-        #     )
-        # )
-        opacities = 1.0 * torch.ones(
-            (fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"
+        opacities = inverse_sigmoid(
+            1.0
+            * torch.ones(
+                (fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"
+            )
         )
+        # opacities = 1.0 * torch.ones(
+            # (fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"
+        # )
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(
@@ -358,7 +445,7 @@ class GaussianModel:
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-        self.active_sh_degree
+        # self.active_sh_degree
         self._generation = torch.zeros(
             self._opacity.shape[0],
             dtype=torch.int64,
@@ -377,7 +464,7 @@ class GaussianModel:
 
         self.update_anchor()
 
-    def training_setup(self, training_args):
+    def training_setup(self, training_args, additional = None):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -401,12 +488,8 @@ class GaussianModel:
             self._rotation.requires_grad_(False)
             self._opacity.requires_grad_(False)
         else:
+            # self._scaling.requires_grad_(False) # DEBUG 不优化 scaling
             l = [
-                {
-                    "params": [self._xyz],
-                    "lr": training_args.position_lr_init * self.spatial_lr_scale,
-                    "name": "xyz",
-                },
                 {
                     "params": [self._features_dc],
                     "lr": training_args.feature_lr,
@@ -417,28 +500,41 @@ class GaussianModel:
                     "lr": training_args.feature_lr / 20.0,
                     "name": "f_rest",
                 },
-                {
-                    "params": [self._opacity],
-                    "lr": training_args.opacity_lr,
-                    "name": "opacity",
-                },
-                {
-                    "params": [self._scaling],
-                    "lr": training_args.scaling_lr,
-                    "name": "scaling",
-                },
-                {
-                    "params": [self._rotation],
-                    "lr": training_args.rotation_lr,
-                    "name": "rotation",
-                },
             ]
+            if True:
+                l.extend([
+                    {
+                        "params": [self._xyz],
+                        "lr": training_args.position_lr_init, # * self.spatial_lr_scale,
+                        "name": "xyz",
+                    },
+
+                    {
+                        "params": [self._opacity],
+                        "lr": training_args.opacity_lr,
+                        "name": "opacity",
+                    },
+                    {
+                        "params": [self._scaling],
+                        "lr": training_args.scaling_lr,
+                        "name": "scaling",
+                    },
+                    {
+                        "params": [self._rotation],
+                        "lr": training_args.rotation_lr,
+                        "name": "rotation",
+                    },
+                ]
+                )
             assert self._language_feature is None, "在训练原始gs的时候language feature应该始终为None"
+            if additional is not None:
+                l.extend(additional)
+
         self.params_list = l
         self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
         self.xyz_scheduler_args = get_expon_lr_func(
-            lr_init=training_args.position_lr_init * self.spatial_lr_scale,
-            lr_final=training_args.position_lr_final * self.spatial_lr_scale,
+            lr_init=training_args.position_lr_init,#  * self.spatial_lr_scale,
+            lr_final=training_args.position_lr_final,#  * self.spatial_lr_scale,
             lr_delay_mult=training_args.position_lr_delay_mult,
             max_steps=training_args.position_lr_max_steps,
         )
@@ -619,19 +715,22 @@ class GaussianModel:
         for group in self.optimizer.param_groups:
             if group["name"] == name:
                 stored_state = self.optimizer.state.get(group["params"][0], None)
-                stored_state["exp_avg"] = torch.zeros_like(tensor)
-                stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
-
-                del self.optimizer.state[group["params"][0]]
-                group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
-                self.optimizer.state[group["params"][0]] = stored_state
-
+                if stored_state is not None:
+                    stored_state["exp_avg"] = torch.zeros_like(tensor)
+                    stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
+                    del self.optimizer.state[group["params"][0]]
+                    group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
+                    self.optimizer.state[group["params"][0]] = stored_state
+                else:
+                    group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
+            if group["name"] not in ["xyz","f_dc","f_rest","rotation","opacity","scaling"]:
+                continue
             stored_state = self.optimizer.state.get(group["params"][0], None)
             if stored_state is not None:
                 stored_state["exp_avg"] = stored_state["exp_avg"][mask]
@@ -673,7 +772,9 @@ class GaussianModel:
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
-            assert len(group["params"]) == 1
+            # assert len(group["params"]) == 1
+            if group["name"] not in tensors_dict: # ZYW DEBUG appearance embedding 不在 tensors_dict 中，不需要更新
+                continue
             extension_tensor = tensors_dict[group["name"]]
             stored_state = self.optimizer.state.get(group["params"][0], None)
             if stored_state is not None:
@@ -874,7 +975,13 @@ class GaussianModel:
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(
-            viewspace_point_tensor[update_filter, :2], dim=-1, keepdim=True
+            viewspace_point_tensor.grad[update_filter, :2], dim=-1, keepdim=True
+        )
+        self.denom[update_filter] += 1
+    
+    def add_densification_stats_grad(self, viewspace_point_tensor_grad, update_filter):
+        self.xyz_gradient_accum[update_filter] += torch.norm(
+            viewspace_point_tensor_grad[update_filter, :2], dim=-1, keepdim=True
         )
         self.denom[update_filter] += 1
 

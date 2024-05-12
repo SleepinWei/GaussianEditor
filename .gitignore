@@ -205,3 +205,11 @@ tmp_add/
 dataset/
 *.dump
 *.txt
+*.png
+*.jpg
+*.ckpt
+*.ply
+input.ply
+*.css
+*.html
+*.js

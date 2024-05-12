@@ -294,6 +294,6 @@ class HierarchicalGaussianModel(GaussianModel):
         print(f"before: {before} - clone: {clone} - split: {split} - prune: {prune} ")
         torch.cuda.empty_cache()
 
-    def add_densification_stats(self, viewspace_point_tensor, update_filter):
+    def add_densification_stats_grad(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1

@@ -13,11 +13,21 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
+import torchshow as ts
 
-def l1_loss(network_output, gt):
+def L_aniso(scaling,r):
+    aniso = torch.max(torch.max(scaling,dim=1).values / torch.min(scaling,dim=1).values,torch.tensor(r,device="cuda")).mean() - r
+    return aniso 
+
+def l1_loss(network_output, gt,ground_mask=None):
+    # ts.save(ground_mask.to(torch.float) * 255,"./vis/temp.jpg")
+    if ground_mask is not None: 
+        return torch.abs((network_output - gt)[ground_mask]).mean()
     return torch.abs((network_output - gt)).mean()
 
-def l2_loss(network_output, gt):
+def l2_loss(network_output, gt,ground_mask=None):
+    if ground_mask is not None: 
+        return torch.abs((network_output - gt)[ground_mask]**2).mean()
     return ((network_output - gt) ** 2).mean()
 
 def gaussian(window_size, sigma):
@@ -30,7 +40,12 @@ def create_window(window_size, channel):
     window = Variable(_2D_window.expand(channel, 1, window_size, window_size).contiguous())
     return window
 
-def ssim(img1, img2, window_size=11, size_average=True):
+def ssim(img1, img2, ground_mask=None, window_size=11, size_average=True):
+    # img1 = img1.clone()
+    # img2 = img2.clone()
+    # if ground_mask is not None:
+    #     img1[~ground_mask] = 1.0 # ZYW DEBUG
+    #     img2[~ground_mask] = 1.0  # ZYW DEBUG 天空设置为一个颜色
     channel = img1.size(-3)
     window = create_window(window_size, channel)
 
@@ -62,3 +77,93 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
     else:
         return ssim_map.mean(1).mean(1).mean(1)
 
+def norm_loss(P, M, depth, fx, fy, W, H):
+    cx=W/2.0
+    cy=H/2.0
+
+    x=torch.arange(W).reshape(1, -1).repeat(H, 1).to(depth.device)
+    y=torch.arange(H).reshape(-1, 1).repeat(1, W).to(depth.device)
+    x=(x-cx)/fx
+    y=(y-cy)/fy
+    view_ray = torch.stack([x, y, torch.ones_like(x)]).to(depth.device)
+    view_ray = view_ray / torch.norm(view_ray, dim=0, keepdim=True)
+    
+    xyz = torch.stack([x*depth.squeeze(), y*depth.squeeze(), depth.squeeze()])
+    _, dPy, dPx = torch.gradient(xyz)
+    normal = torch.cross(dPx, dPy, dim=0)
+    normal = normal / torch.norm(normal, dim=0, keepdim=True)
+    angle = torch.sum(normal * view_ray, dim=0)
+    normal[:, angle > 0] *= -1.0
+
+    
+    return (P - (M * normal).sum(dim=0, keepdim=True)).mean(), normal, (P - (M * normal).sum(dim=0, keepdim=True))/2.0
+    
+def depths_to_points(view, depthmap):
+    # c2w = (view.world_view_transform.T).inverse()
+    W, H = view.image_width, view.image_height
+    fx = W / (2 * math.tan(view.FoVx / 2.))
+    fy = H / (2 * math.tan(view.FoVy / 2.))
+    intrins = torch.tensor(
+        [[fx, 0., W/2.],
+        [0., fy, H/2.],
+        [0., 0., 1.0]]
+    ).float().cuda()
+    grid_x, grid_y = torch.meshgrid(torch.arange(W)+0.5, torch.arange(H)+0.5, indexing='xy')
+    points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=-1).reshape(-1, 3).float().cuda()
+    rays_d = points @ intrins.inverse().T
+    # rays_o = torch.zeros_like(rays_d)
+    points = depthmap.reshape(-1, 1) * rays_d #+ rays_o
+    return points
+
+def depth_to_normal(view, depth):
+    """
+        view: view camera
+        depth: depthmap 
+    """
+    points = depths_to_points(view, depth).reshape(*depth.shape[1:], 3)
+    output = torch.zeros_like(points)
+    dx = torch.cat([points[2:, 1:-1] - points[:-2, 1:-1]], dim=0)
+    dy = torch.cat([points[1:-1, 2:] - points[1:-1, :-2]], dim=1)
+    normal_map = torch.nn.functional.normalize(torch.cross(dx, dy, dim=-1), dim=-1)
+    output[1:-1, 1:-1, :] = normal_map
+    return output, points
+
+import math
+def normal_loss_2DGS(P, M, depth, view):
+    W = view.image_width
+    H = view.image_height
+    fx = W / (2 * math.tan(view.FoVx / 2.))
+    fy = H / (2 * math.tan(view.FoVy / 2.))
+    cx=W/2.0
+    cy=H/2.0
+
+    x=torch.arange(W).reshape(1, -1).repeat(H, 1).to(depth.device)+0.5
+    y=torch.arange(H).reshape(-1, 1).repeat(1, W).to(depth.device)+0.5
+    x=(x-cx)/fx
+    y=(y-cy)/fy
+    view_ray = torch.stack([x, y, torch.ones_like(x)]).to(depth.device)
+    view_ray = view_ray / torch.norm(view_ray, dim=0, keepdim=True)
+    
+    xyz_ = torch.stack([x*depth.squeeze(), y*depth.squeeze(), depth.squeeze()])
+    _, dPy, dPx = torch.gradient(xyz_)
+
+    normal, xyz = depth_to_normal(view, depth)
+    normal = normal.permute(2, 0, 1)
+    xyz = xyz.permute(2, 0, 1)
+    return (P - (M * normal).sum(dim=0, keepdim=True)).mean(), normal, (P - (M * normal).sum(dim=0, keepdim=True))/2.0
+    
+def get_edge_map(gt_image):
+    """
+    return the exp(-grad) of the image
+    edge will have small value
+    """
+    grad_img_left = torch.mean(torch.abs(gt_image[:, 1:-1, 1:-1] - gt_image[:, 1:-1, :-2]), 0)
+    grad_img_right = torch.mean(torch.abs(gt_image[:, 1:-1, 1:-1] - gt_image[:, 1:-1, 2:]), 0)
+    grad_img_top = torch.mean(torch.abs(gt_image[:, 1:-1, 1:-1] - gt_image[:, :-2, 1:-1]), 0)
+    grad_img_bottom = torch.mean(torch.abs(gt_image[:, 1:-1, 1:-1] - gt_image[:, 2:, 1:-1]), 0)
+    max_grad = torch.max(torch.stack([grad_img_left, grad_img_right, grad_img_top, grad_img_bottom], dim=-1), dim=-1)[0]
+    # pad
+    max_grad = torch.exp(-max_grad)
+    max_grad = torch.nn.functional.pad(max_grad, (1, 1, 1, 1), mode="constant", value=0)
+
+    return max_grad

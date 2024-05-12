@@ -199,7 +199,7 @@ def training(
                 gaussians.max_radii2D[visibility_filter] = torch.max(
                     gaussians.max_radii2D[visibility_filter], radii[visibility_filter]
                 )
-                gaussians.add_densification_stats(
+                gaussians.add_densification_stats_grad(
                     viewspace_point_tensor.grad, visibility_filter
                 )
 

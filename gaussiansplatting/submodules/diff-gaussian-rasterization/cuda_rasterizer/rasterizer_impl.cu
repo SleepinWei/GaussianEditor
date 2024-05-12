@@ -217,8 +217,9 @@ int CudaRasterizer::Rasterizer::forward(
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	float *out_color,
+	float* out_depth,
+	float* out_alpha,
 	float *out_language_feature,
-	float *out_depth,
 	int *radii,
 	bool debug,
 	bool include_feature)
@@ -338,15 +339,16 @@ int CudaRasterizer::Rasterizer::forward(
 				   width, height,
 				   geomState.means2D,
 				   feature_ptr,
-				   language_feature_ptr,
 				   geomState.depths,
+				   language_feature_ptr,
 				   geomState.conic_opacity,
-				   imgState.accum_alpha,
+				//    imgState.accum_alpha,
+					out_alpha,
 				   imgState.n_contrib,
 				   background,
 				   out_color,
-				   out_language_feature,
 				   out_depth,
+				   out_language_feature,
 				   include_feature),
 			   debug) // 增加了参数
 
@@ -366,6 +368,7 @@ void CudaRasterizer::Rasterizer::backward(
 	const float *means3D,
 	const float *shs,
 	const float *colors_precomp,
+	const float* alphas,
 	const float *language_feature_precomp,
 	const float *scales,
 	const float scale_modifier,
@@ -380,11 +383,14 @@ void CudaRasterizer::Rasterizer::backward(
 	char *binning_buffer,
 	char *img_buffer,
 	const float *dL_dpix,
+	const float* dL_dpix_depth,
+	const float* dL_dalphas,
 	const float *dL_dpix_F,
 	float *dL_dmean2D,
 	float *dL_dconic,
 	float *dL_dopacity,
 	float *dL_dcolor,
+	float* dL_ddepth,
 	float *dL_dlanguage_feature,
 	float *dL_dmean3D,
 	float *dL_dcov3D,
@@ -413,6 +419,7 @@ void CudaRasterizer::Rasterizer::backward(
 	// opacity and RGB of Gaussians from per-pixel loss gradients.
 	// If we were given precomputed colors and not SHs, use them.
 	const float *color_ptr = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
+	const float* depth_ptr = geomState.depths;
 	const float *language_feature_ptr = language_feature_precomp;
 	// std::cout <<"Language_feature_ptr:" <<  *language_feature_ptr << '\n';
 	// std::cout << "language feature ptr" << '\n';
@@ -427,15 +434,20 @@ void CudaRasterizer::Rasterizer::backward(
 				   geomState.means2D,
 				   geomState.conic_opacity,
 				   color_ptr,
+				   depth_ptr,
+				   alphas,
 				   language_feature_ptr,
-				   imgState.accum_alpha,
+				//    imgState.accum_alpha,
 				   imgState.n_contrib,
 				   dL_dpix,
+					dL_dpix_depth,
+					dL_dalphas,
 				   dL_dpix_F,
 				   (float3 *)dL_dmean2D,
 				   (float4 *)dL_dconic,
 				   dL_dopacity,
 				   dL_dcolor,
+				   dL_ddepth,
 				   dL_dlanguage_feature,
 				   include_feature),
 			   debug)
@@ -462,6 +474,7 @@ void CudaRasterizer::Rasterizer::backward(
 									dL_dconic,
 									(glm::vec3 *)dL_dmean3D,
 									dL_dcolor,
+									dL_ddepth,
 									dL_dcov3D,
 									dL_dsh,
 									(glm::vec3 *)dL_dscale,

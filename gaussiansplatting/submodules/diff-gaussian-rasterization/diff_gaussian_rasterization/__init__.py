@@ -92,20 +92,21 @@ class _RasterizeGaussians(torch.autograd.Function):
         if raster_settings.debug:
             # Copy them before they can be corrupted
             cpu_args = cpu_deep_copy_tuple(args)
-            try:
-                num_rendered, color, language_feature, depth, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(
-                    *args)
-            except Exception as ex:
-                torch.save(cpu_args, "snapshot_fw.dump")
-                print(
-                    "\nAn error occured in forward. Please forward snapshot_fw.dump for debugging.")
-                raise ex
+            # try:
+            num_rendered, color, language_feature, depth, alpha, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(
+                *args)
+            # except Exception as ex:
+            #     torch.save(cpu_args, "snapshot_fw.dump")
+            #     print(
+            #         "\nAn error occured in forward. Please forward snapshot_fw.dump for debugging.")
+            #     raise ex
         else:
             (
                 num_rendered,
                 color,
                 language_feature,
                 depth,
+                alpha,
                 radii,
                 geomBuffer,
                 binningBuffer,
@@ -127,11 +128,12 @@ class _RasterizeGaussians(torch.autograd.Function):
             geomBuffer,
             binningBuffer,
             imgBuffer,
+            alpha
         )
-        return color, language_feature, depth, radii
+        return color, language_feature, depth, alpha, radii
 
     @staticmethod
-    def backward(ctx, grad_out_color, grad_out_language_feature, grad_depth, grad_radii):
+    def backward(ctx, grad_out_color, grad_out_language_feature, grad_out_depth, grad_out_alpha, grad_radii):
 
         # Restore necessary values from context
         num_rendered = ctx.num_rendered
@@ -148,6 +150,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             geomBuffer,
             binningBuffer,
             imgBuffer,
+            alpha
         ) = ctx.saved_tensors
 
         # Restructure args as C++ method expects them
@@ -166,6 +169,8 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.tanfovx,
             raster_settings.tanfovy,
             grad_out_color,
+            grad_out_depth,
+            grad_out_alpha,
             grad_out_language_feature,
             sh,
             raster_settings.sh_degree,
@@ -174,8 +179,9 @@ class _RasterizeGaussians(torch.autograd.Function):
             num_rendered,
             binningBuffer,
             imgBuffer,
+            alpha,
             raster_settings.debug,
-            raster_settings.include_feature
+            raster_settings.include_feature,
         )
 
         # Compute gradients for relevant tensors by invoking backward method
@@ -210,6 +216,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         return grads
 
 
+import torch
 class GaussianRasterizationSettings(NamedTuple):
     image_height: int
     image_width: int
@@ -223,6 +230,7 @@ class GaussianRasterizationSettings(NamedTuple):
     campos: torch.Tensor
     prefiltered: bool
     debug: bool
+    Ld_value: torch.Tensor
     include_feature: bool
 
 

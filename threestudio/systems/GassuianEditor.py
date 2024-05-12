@@ -14,6 +14,7 @@ from threestudio.systems.base import BaseLift3DSystem
 from threestudio.utils.typing import *
 from gaussiansplatting.gaussian_renderer import render
 from gaussiansplatting.scene import GaussianModel
+from gaussiansplatting.scene.sky_model import SkyModel
 
 from gaussiansplatting.arguments import (
     PipelineParams,
@@ -31,6 +32,7 @@ class GaussianEditor(BaseLift3DSystem):
     @dataclass
     class Config(BaseLift3DSystem.Config):
         gs_source: str = None
+        sky_source: str = None
 
         per_editing_step: int = -1
         edit_begin_step: int = 0
@@ -77,6 +79,7 @@ class GaussianEditor(BaseLift3DSystem):
             anchor_weight_init=self.cfg.anchor_weight_init,
             anchor_weight_multiplier=self.cfg.anchor_weight_multiplier,
         )
+        self.sky = SkyModel()
         bg_color = [1, 1, 1] if False else [0, 0, 0]
         self.background_tensor = torch.tensor(
             bg_color, dtype=torch.float32, device="cuda"
@@ -168,7 +171,7 @@ class GaussianEditor(BaseLift3DSystem):
         self.gaussian.localize = local # ZYW ?: local 是什么含义
 
         for id, cam in enumerate(batch["camera"]):
-            render_pkg = render(cam, self.gaussian, self.pipe, renderbackground, self.cfg.include_feature)
+            render_pkg = render(cam, self.gaussian, self.pipe, renderbackground, self.cfg.include_feature,sky=self.sky)
             image, viewspace_point_tensor, _, radii = (
                 render_pkg["render"],
                 render_pkg["viewspace_points"],
@@ -271,7 +274,7 @@ class GaussianEditor(BaseLift3DSystem):
                     self.gaussian.max_radii2D[self.visibility_filter],
                     self.radii[self.visibility_filter],
                 )
-                self.gaussian.add_densification_stats(
+                self.gaussian.add_densification_stats_grad(
                     viewspace_point_tensor_grad, self.visibility_filter
                 )
                 # Densification
@@ -494,6 +497,8 @@ class GaussianEditor(BaseLift3DSystem):
         opt = OptimizationParams(self.parser, self.trainer.max_steps, self.cfg.gs_lr_scaler, self.cfg.gs_final_lr_scaler, self.cfg.color_lr_scaler,
                                  self.cfg.opacity_lr_scaler, self.cfg.scaling_lr_scaler, self.cfg.rotation_lr_scaler, self.cfg.include_feature)
         self.gaussian.load_ply(self.cfg.gs_source)
+        self.sky.load_state_dict(torch.load(self.cfg.sky_source))
+
         self.gaussian.max_radii2D = torch.zeros(
             (self.gaussian.get_xyz.shape[0]), device="cuda"
         )
@@ -503,6 +508,7 @@ class GaussianEditor(BaseLift3DSystem):
         self.pipe = PipelineParams(self.parser)
         opt = OmegaConf.create(vars(opt))
         opt.update(self.cfg.training_args)
+        # opt.update(self.cfg.__dict__)
         self.gaussian.training_setup(opt)
 
         ret = {

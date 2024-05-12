@@ -47,6 +47,7 @@ from gaussiansplatting.scene.vanilla_gaussian_model import (
 from gaussiansplatting.arguments import (
     PipelineParams,
     OptimizationParams,
+    ModelParams
 )
 from omegaconf import OmegaConf
 
@@ -65,7 +66,7 @@ from threestudio.utils.camera import camera_ray_sample_points, project, unprojec
 
 # from threestudio.utils.dpt import DPT
 # from threestudio.utils.config import parse_structured
-from gaussiansplatting.scene.camera_scene import CamScene
+from gaussiansplatting.scene.camera_scene import CamScene,CamSceneKITTI
 import math
 from GUI.EditGuidance import EditGuidance
 from GUI.DelGuidance import DelGuidance
@@ -84,16 +85,25 @@ from threestudio.utils.transform import (
     scale_gaussians,
     default_model_mtx,
 )
-
+from gaussiansplatting.scene.dataset_readers import KITTI360
+from gaussiansplatting.utils.appearance_modeling import AppearanceCNN
+from gaussiansplatting.scene.sky_model import SkyModel
 
 class WebUI:
-    def __init__(self, cfg) -> None:
+    def __init__(self, parser) -> None:
         # ZYW DEBUG
         # torch.cuda.memory._record_memory_history()
+        lp =  ModelParams(parser)
+        pp = PipelineParams(parser)
 
-        self.gs_source = cfg.gs_source
-        self.colmap_dir = cfg.colmap_dir
+        args = parser.parse_args()
+        self.pipe = pp.extract(args)
+        self.dataset = lp.extract(args)
+
+        self.gs_source = args.gs_source
+        # self.colmap_dir = cfg.colmap_dir
         self.port = 8084
+        self.model_path = self.dataset.model_path
         # training cfg
 
         self.use_sam = False
@@ -114,6 +124,21 @@ class WebUI:
         )
         # load
         self.gaussian.load_ply(self.gs_source)
+        self.sky = None
+        if self.pipe.enable_sky:
+            self.sky = SkyModel()
+            self.sky.load_state_dict(torch.load(self.dataset.sky_source))
+
+        center_pos = self.gaussian.get_xyz.mean(axis=0)
+        center_pos = center_pos.cpu().detach().numpy()
+        # DEBUG may have bugs
+        if self.model_path is not None:
+            if os.path.exists(self.model_path):
+                (model_params, first_iter) = torch.load(self.model_path)
+                self.gaussian.restore(model_params,args)
+            else:
+                print("[WARNING] model path does not exist")
+
         self.gaussian.max_radii2D = torch.zeros(
             (self.gaussian.get_xyz.shape[0]), device="cuda"
         )
@@ -125,14 +150,25 @@ class WebUI:
         self.ip2p = None
         self.ctn_ip2p = None
 
+        # text query
+        # from langsplat import OpenCLIPEncoder
+        # self.clip_encoder = OpenCLIPEncoder(cfg.vae_path)
+
         self.ctn_inpaint = None
         self.ctn_ip2p = None
         self.training = False
-        if self.colmap_dir is not None:
-            scene = CamScene(self.colmap_dir, h=512, w=512)
-            self.cameras_extent = scene.cameras_extent
-            self.colmap_cameras = scene.cameras
 
+        if self.dataset.dataset_type == "COLMAP":
+            scene = CamScene(self.dataset.source_path, h=512, w=512)
+        elif self.dataset.dataset_type == "KITTI":
+            scene = CamSceneKITTI(self.dataset.source_path,seq=self.dataset.seq,chunk_id=self.dataset.chunk_id)
+        else: 
+            print("[ERROR]: dataset type not supported")
+            return
+
+        self.cameras_extent = scene.cameras_extent
+        self.colmap_cameras = scene.cameras
+ 
         self.background_tensor = torch.tensor(
             [0, 0, 0], dtype=torch.float32, device="cuda"
         )
@@ -146,8 +182,8 @@ class WebUI:
         self.semantic_gauassian_masks = {}
         self.semantic_gauassian_masks["ALL"] = torch.ones_like(self.gaussian._opacity)
 
-        self.parser = ArgumentParser(description="Training script parameters")
-        self.pipe = PipelineParams(self.parser)
+        # self.parser = ArgumentParser(description="Training script parameters")
+        # self.pipe = PipelineParams(self.parser)
 
         # status
         self.display_semantic_mask = False
@@ -163,7 +199,7 @@ class WebUI:
         self.draw_flag = True
         with self.server.add_gui_folder("Render Setting"):
             self.resolution_slider = self.server.add_gui_slider(
-                "Resolution", min=384, max=4096, step=2, initial_value=2048
+                "Resolution", min=384, max=4096, step=2, initial_value=512
             )
 
             self.FoV_slider = self.server.add_gui_slider(
@@ -173,6 +209,8 @@ class WebUI:
             self.fps = self.server.add_gui_text(
                 "FPS", initial_value="-1", disabled=True
             )
+            # specify options
+            self.renderer_options = ["comp_rgb","masks","language_feature_image","language_feature_mix","language_query"]
             self.renderer_output = self.server.add_gui_dropdown(
                 "Renderer Output",
                 [
@@ -184,6 +222,9 @@ class WebUI:
             self.frame_show = self.server.add_gui_checkbox(
                 "Show Frame", initial_value=False
             )
+
+        with self.server.add_gui_folder("Query"):
+            self.language_query = self.server.add_gui_text("Query",initial_value="controller")
 
         with self.server.add_gui_folder("Semantic Tracing"):
             self.sam_enabled = self.server.add_gui_checkbox(
@@ -569,6 +610,12 @@ class WebUI:
                     _.visible = self.edit_frame_show.value
                 self.guidance.visible = self.edit_frame_show.value
 
+
+        # data_dir = self.model_path.source_path
+        # self.kitti_data = KITTI360(data_dir,0,0)
+        # chunk_id = self.dataset.chunk_id
+        # if chunk_id != -1:
+
         with torch.no_grad():
             self.frames = []
             random.seed(0)
@@ -677,11 +724,12 @@ class WebUI:
             opacity_lr_scaler = self.opacity_lr_scaler.value,
             scaling_lr_scaler = self.scaling_lr_scaler.value,
             rotation_lr_scaler = self.rotation_lr_scaler.value,
-
         )
+
         opt = OmegaConf.create(vars(opt))
         # opt.update(self.training_args)
-        self.gaussian.spatial_lr_scale = self.cameras_extent
+        # ZYW DEBUG: 取消 spatial lr scale 
+        # self.gaussian.spatial_lr_scale = self.cameras_extent
         self.gaussian.training_setup(opt)
 
     def render(
@@ -694,12 +742,13 @@ class WebUI:
         self.gaussian.localize = local
 
         # ZYW: include_feature = False
-        render_pkg = render(cam, self.gaussian, self.pipe, self.background_tensor, False)
+        render_pkg = render(cam, self.gaussian, self.pipe, self.background_tensor, False,sky=self.sky)
         image, viewspace_point_tensor, _, radii = (
             render_pkg["render"],
             render_pkg["viewspace_points"],
             render_pkg["visibility_filter"],
             render_pkg["radii"],
+            # render_pkg["language_feature_image"]
         )
         if train:
             self.viewspace_point_tensor = viewspace_point_tensor
@@ -743,8 +792,7 @@ class WebUI:
 
         depth = render_pkg["depth_3dgs"]
         depth = depth.permute(1, 2, 0)[None]
-        render_pkg["depth"] = depth
-        render_pkg["opacity"] = depth / (depth.max() + 1e-5)
+        render_pkg["depth"] = depth / (depth.max() + 1e-5)
 
         return {
             **render_pkg,
@@ -984,12 +1032,41 @@ class WebUI:
     @torch.no_grad()
     def prepare_output_image(self, output):
         out_key = self.renderer_output.value
-        out_img = output[out_key][0]  # H W C
+        # out_img = output[out_key][0]  # H W C
         if out_key == "comp_rgb":
             if self.show_semantic_mask.value:
                 out_img = output["semantic"][0].moveaxis(0, -1)
+            else:
+                out_img = output["comp_rgb"][0]
         elif out_key == "masks":
             out_img = output["masks"][0].to(torch.float32)[..., None].repeat(1, 1, 3)
+        elif out_key == "language_feature_image": # ZYW semantic segmantation
+            out_img = output["language_feature_image"].to(torch.float32).permute(1,2,0)
+        elif out_key == "opacity": # ZYW semantic segmantation
+            out_img = output["opacity"][0][:,:,None].to(torch.float32).repeat(1,1,3)
+        elif out_key == "normal": # ZYW semantic segmantation
+            out_img = output["normal"].permute(1,2,0) * 0.5 + 0.5 
+        # elif out_key == "language_feature_mix": # TODO: 改成 button 控制
+        #     alpha = 0.5
+        #     _mask = output["language_feature_image"].to(torch.float32).permute(1,2,0)
+        #     _rgb = output["comp_rgb"][0]
+        #     out_img = alpha * _mask + (1-alpha) * _rgb
+        elif out_key == "language_query":
+            alpha = 0.5 
+            # ZYW: text query relevency. 
+            language_feat = output["language_feature_image"].permute(1,2,0)
+            out_img = self.clip_encoder.get_relevancy(self.language_query.value,language_feat,0)
+            # norm = torch.norm(out_img,dim=2,keepdim=True)
+            # out_img /= norm
+            out_img = out_img[:,:,0][...,None].repeat(1,1,3)
+            # out_img = torch.pow(out_img,1/2.2)
+        elif out_key == "depth":
+            out_img = output["depth"][0].to(torch.float32).repeat(1,1,3)
+        # elif out_key == "opacity": # ZYW semantic segmantation
+        #     out_img = output["opacity"][0][:,:,None].to(torch.float32).repeat(1,1,3)
+        else: 
+            print("[ERROR] Output format not supported")
+            out_img = torch.ones_like(output["semantic"][0],dtype=torch.float32).repeat(1,1,3)
 
         if out_img.dtype == torch.float32:
             out_img = out_img.clamp(0, 1)
@@ -1024,7 +1101,7 @@ class WebUI:
                 self.left_up.value[0] : self.right_down.value[0],
             ] = 0
 
-        self.renderer_output.options = list(output.keys())
+        self.renderer_output.options = self.renderer_options
         return out_img.cpu().moveaxis(0, -1).numpy().astype(np.uint8)
 
     def render_loop(self):
@@ -1500,7 +1577,7 @@ class WebUI:
                 self.gaussian.max_radii2D[self.visibility_filter],
                 self.radii[self.visibility_filter],
             )
-            self.gaussian.add_densification_stats(
+            self.gaussian.add_densification_stats_grad(
                 self.viewspace_point_tensor.grad, self.visibility_filter
             )
 
@@ -1543,34 +1620,12 @@ class WebUI:
         return inpaint_2D_mask, origin_frames
 
     def add_theme(self):
-        buttons = (
-            TitlebarButton(
-                text="Getting Started",
-                icon=None,
-                href="https://github.com/buaacyw/GaussianEditor/blob/master/docs/webui.md",
-            ),
-            TitlebarButton(
-                text="Github",
-                icon="GitHub",
-                href="https://github.com/buaacyw/GaussianEditor",
-            ),
-            TitlebarButton(
-                text="Yiwen Chen",
-                icon=None,
-                href="https://buaacyw.github.io/",
-            ),
-            TitlebarButton(
-                text="Zilong Chen",
-                icon=None,
-                href="https://scholar.google.com/citations?user=2pbka1gAAAAJ&hl=en",
-            ),
-        )
         image = TitlebarImage(
             image_url_light="https://github.com/buaacyw/gaussian-editor/raw/master/static/images/logo.png",
             image_alt="GaussianEditor Logo",
             href="https://buaacyw.github.io/gaussian-editor/",
         )
-        titlebar_theme = TitlebarConfig(buttons=buttons, image=image)
+        titlebar_theme = TitlebarConfig(image=image)
         brand_color = self.server.add_gui_rgb("Brand color", (7, 0, 8), visible=False)
 
         self.server.configure_theme(
@@ -1582,9 +1637,13 @@ class WebUI:
 
 if __name__ == "__main__":
     parser = ArgumentParser()
+    # parser.add_argument("--dataset_type",type=str,required=True)
     parser.add_argument("--gs_source", type=str, required=True)  # gs ply or obj file?
-    parser.add_argument("--colmap_dir", type=str, required=True)  #
+    # # parser.add_argument("--colmap_dir", type=str, required=True)  #
+    # parser.add_argument("--model_path","-m",type=str,required=False) # trained checkpoint model path
+    # parser.add_argument("--include_feature", action="store_true")
+    # parser.add_argument("--vae_path",default="/home/zhuyunwei/LangSplat/model/pretrained_model/autoencoder/sofa/best_ckpt.pth") # vae_path for langsplat
 
-    args = parser.parse_args()
-    webui = WebUI(args)
+    # args = parser.parse_args()
+    webui = WebUI(parser)
     webui.render_loop()

@@ -150,7 +150,11 @@ def main(args, extras) -> None:
                 ProgressCallback(save_path=os.path.join(cfg.trial_dir, "progress"))
             ]
         else:
-            callbacks += [CustomProgressBar(refresh_rate=1)]
+            # callbacks += [CustomProgressBar(refresh_rate=1)]
+            from pytorch_lightning.callbacks import TQDMProgressBar
+            callbacks += [
+                TQDMProgressBar()
+            ]
 
     def write_to_text(file, lines):
         with open(file, "w") as f:

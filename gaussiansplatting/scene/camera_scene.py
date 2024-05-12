@@ -11,7 +11,7 @@
 
 import os
 from gaussiansplatting.scene.dataset_readers import sceneLoadTypeCallbacks
-from gaussiansplatting.utils.camera_utils import cameraList_load
+from gaussiansplatting.utils.camera_utils import cameraList_load, cameraList_from_camInfos,cameraList_load_kitti
 
 
 class CamScene:
@@ -50,3 +50,13 @@ class CamScene:
 
     def getTestCameras(self, scale=1.0):
         return self.test_cameras[scale]
+
+class CamSceneKITTI:
+    def __init__(self, source_path, seq=0, chunk_id=-1):
+        """b
+        :param path: Path to colmap scene main folder.
+        """
+        scene_info = sceneLoadTypeCallbacks["KITTI"](source_path,seq=seq,eval=False,chunk_id=chunk_id)
+
+        self.cameras_extent = scene_info.nerf_normalization["radius"]
+        self.cameras = cameraList_load_kitti(scene_info.train_cameras)

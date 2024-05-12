@@ -1,28 +1,40 @@
-name: "edit-n2n"
+name: "edit-n2n-kitti"
 tag: "${rmspace:${system.prompt_processor.prompt},_}"
 exp_root_dir: "outputs"
 seed: 0
  
-data_type: "gs-load"
+data_type: "gs-load-kitti"
 data:
   batch_size: 1
-  source: ???
+  source: "/DATA1/zhuyunwei/KITTI-360"
   max_view_num: 10 # 96
   eval_camera_distance: 4.0
-  camera_distance_range: [1.5, 4.0]
+  camera_distance_range: [1.5, 60] # TODO Camera distance range to sample from in training
   light_sample_strategy: "dreamfusion3dgs"
   height: 512
   width: 512
 
   elevation_view_num: 2
   azimuth_view_num: 8
+  seq: 0
+  chunk_id: 22
   # elevation_range: [-10 , 80]
+trainer:
+  max_steps: 5000
+  log_every_n_steps: 10
+  num_sanity_val_steps: 0
+  val_check_interval: 20
+  enable_progress_bar: true
+  precision: 16-mixed
 system_type: "gsedit-system-edit"
 system:
-  gs_source: ???
+  gs_source: "/home/zhuyunwei/GaussianEditor/gaussiansplatting/output/20240510_221252_save/point_cloud/iteration_50000/point_cloud.ply"
+  sky_source: "/home/zhuyunwei/GaussianEditor/gaussiansplatting/output/20240510_221252_save/chkpnt50000_sky.pth"
+
   per_editing_step: 10
   edit_begin_step: 0
-  densify_until_iter: 200000
+  edit_until_step: 5000
+  densify_until_iter: 5000
   densify_from_iter: 0
   densification_interval: 100
   max_grad: 5
@@ -30,8 +42,18 @@ system:
   prompt_processor_type: "stable-diffusion-prompt-processor"
   prompt_processor:
     pretrained_model_name_or_path: "runwayml/stable-diffusion-v1-5"
-    prompt: 'a street view photo with cars, buildings, roads and plants, all covered with snow, winter'
+    prompt: 'turn it snowy'
+  
   include_feature: false
+  mask_thres: 0.8
+  max_densify_percent: 0.01
+  anchor_weight_init_g0: 0.01
+  anchor_weight_init: 0.01
+  anchor_weight_multiplier: 1.3
+  gs_lr_scaler: 0.1
+  gs_final_lr_scaler: 0.1
+  color_lr_scaler: 1
+  rotation_lr_scaler: 2
 
   guidance_type: "stable-diffusion-instructpix2pix-guidance"
   guidance:
@@ -39,7 +61,6 @@ system:
     max_step_percent: 0.98
     guidance_scale: 8
     condition_scale: 1
-
 
   loggers:
     wandb:
@@ -68,15 +89,6 @@ system:
       lr: 0.001
       betas: [0.9, 0.99]
       eps: 1.e-15
-
-trainer:
-  max_steps: 10000
-  log_every_n_steps: 1
-  num_sanity_val_steps: 0
-  val_check_interval: 20
-  enable_progress_bar: true
-  precision: 16-mixed
-
 checkpoint:
   save_last: true # save at each validation time
   save_top_k: -1
