@@ -13,8 +13,23 @@
 #define CUDA_RASTERIZER_CONFIG_H_INCLUDED
 
 #define NUM_CHANNELS 3 // Default 3, RGB
-#define NUM_CHANNELS_language_feature 3 // CLIP_feature
+#define NUM_CHANNELS_language_feature 3 
 #define BLOCK_X 16
 #define BLOCK_Y 16
+
+#define Ld
+#define far 1000.0f
+#define near 0.2f
+
+#define Ln
+
+// define an macro that represent Ld || Ln, used to compute shared values in backwards
+#ifdef Ld
+#define LdOrLn
+#else
+#ifdef Ln
+#define LdOrLn
+#endif
+#endif
 
 #endif

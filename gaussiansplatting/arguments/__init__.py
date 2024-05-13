@@ -75,11 +75,11 @@ class ModelParams(ParamGroup):
 
 
 class PipelineParams(ParamGroup):
-    def __init__(self, parser):
+    def __init__(self, parser,enable_sky=0):
         self.convert_SHs_python = False
         self.compute_cov3D_python = False
         self.debug = False
-        self.enable_sky = 0
+        self.enable_sky = enable_sky
         super().__init__(parser, "Pipeline Parameters")
 
  # OptimizationParams

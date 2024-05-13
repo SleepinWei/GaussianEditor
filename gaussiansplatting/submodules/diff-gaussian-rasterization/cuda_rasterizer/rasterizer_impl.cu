@@ -9,16 +9,16 @@
  * For inquiries contact  george.drettakis@inria.fr
  */
 
+#include "rasterizer_impl.h"
+#include <iostream>
+#include <fstream>
+#include <algorithm>
+#include <numeric>
+#include <cuda.h>
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
-#include "rasterizer_impl.h"
-#include <algorithm>
 #include <cub/cub.cuh>
 #include <cub/device/device_radix_sort.cuh>
-#include <cuda.h>
-#include <fstream>
-#include <iostream>
-#include <numeric>
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
 
@@ -27,8 +27,8 @@
 namespace cg = cooperative_groups;
 #include "apply_weights.h"
 #include "auxiliary.h"
-#include "backward.h"
 #include "forward.h"
+#include "backward.h"
 
 // Helper function to find the next-highest bit of the MSB
 // on the CPU.
@@ -88,6 +88,7 @@ __global__ void duplicateWithKeys(
 		uint32_t off = (idx == 0) ? 0 : offsets[idx - 1];
 		uint2 rect_min, rect_max;
 
+		// rect: tile index bounding box
 		getRect(points_xy[idx], radii[idx], rect_min, rect_max, grid);
 
 		// For each tile that the bounding rect overlaps, emit a
@@ -166,15 +167,27 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char *&ch
 	cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched, geom.tiles_touched, P);
 	obtain(chunk, geom.scanning_space, geom.scan_size, 128);
 	obtain(chunk, geom.point_offsets, P, 128);
+
+	obtain(chunk, geom.STuv, P * 6, 128);
+	obtain(chunk, geom.A, P * 9, 128);
+	obtain(chunk, geom.normal, P, 128);
 	return geom;
 }
 
 CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char *&chunk, size_t N)
 {
 	ImageState img;
-	obtain(chunk, img.accum_alpha, N, 128);
+	obtain(chunk, img.accum_alpha, N, 128); // DEBUG
+
 	obtain(chunk, img.n_contrib, N, 128);
 	obtain(chunk, img.ranges, N, 128);
+	obtain(chunk, img.ray_Q, N, 128);
+	obtain(chunk, img.ray_P, N, 128);
+	obtain(chunk, img.ray_Q2Q, N, 128);
+	obtain(chunk, img.ray_M, N * 3, 128);
+
+	obtain(chunk, img.depth_contrib, N, 128);
+
 	return img;
 }
 
@@ -190,6 +203,7 @@ CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char *&chun
 		binning.point_list_keys_unsorted, binning.point_list_keys,
 		binning.point_list_unsorted, binning.point_list, P);
 	obtain(chunk, binning.list_sorting_space, binning.sorting_size, 128);
+
 	return binning;
 }
 
@@ -205,7 +219,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const float *means3D,
 	const float *shs,
 	const float *colors_precomp,
-	const float *language_feature_precomp, // 增加了参数
+	const float *language_feature_precomp,
 	const float *opacities,
 	const float *scales,
 	const float scale_modifier,
@@ -217,9 +231,13 @@ int CudaRasterizer::Rasterizer::forward(
 	const float tan_fovx, float tan_fovy,
 	const bool prefiltered,
 	float *out_color,
-	float* out_depth,
-	float* out_alpha,
 	float *out_language_feature,
+	float *out_depth,
+	float *out_alpha,
+	float *out_normal,
+	float *out_distortion,
+	float *out_P,
+	float *out_M,
 	int *radii,
 	bool debug,
 	bool include_feature)
@@ -270,6 +288,9 @@ int CudaRasterizer::Rasterizer::forward(
 				   geomState.means2D,
 				   geomState.depths,
 				   geomState.cov3D,
+				   geomState.STuv,
+				   geomState.A,
+				   geomState.normal,
 				   geomState.rgb,
 				   geomState.conic_opacity,
 				   tile_grid,
@@ -321,41 +342,47 @@ int CudaRasterizer::Rasterizer::forward(
 			num_rendered,
 			binningState.point_list_keys,
 			imgState.ranges);
-	// CHECK_CUDA(, debug)
+	CHECK_CUDA(, debug);
 
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float *feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
 	const float *language_feature_ptr = language_feature_precomp;
 
-	// cudaEvent_t start, stop; //事件对象
-	// cudaEventCreate(&start);
-	// cudaEventCreate(&stop);
-	// cudaEventRecord(start, stream);
-
 	CHECK_CUDA(FORWARD::render(
 				   tile_grid, block,
 				   imgState.ranges,
 				   binningState.point_list,
+				   means3D,
+				   viewmatrix,
 				   width, height,
+				   focal_x, focal_y,
 				   geomState.means2D,
 				   feature_ptr,
-				   geomState.depths,
 				   language_feature_ptr,
+				   geomState.depths,
 				   geomState.conic_opacity,
-				//    imgState.accum_alpha,
-					out_alpha,
+				   geomState.STuv,
+				   geomState.A,
+				   geomState.normal,
+				   out_alpha,
 				   imgState.n_contrib,
+				   imgState.depth_contrib,
 				   background,
 				   out_color,
-				   out_depth,
 				   out_language_feature,
+				   out_depth,
+				   out_normal,
+				   out_distortion,
+				   imgState.ray_P,
+				   imgState.ray_Q,
+				   imgState.ray_Q2Q,
+				   imgState.ray_M,
 				   include_feature),
-			   debug) // 增加了参数
+			   debug);
 
-	// cudaEventRecord(stop, stream);
-	// cudaEventSynchronize(stop);
-	// float elapsedTime;
-	// cudaEventElapsedTime(&elapsedTime, start, stop);
+	CHECK_CUDA(cudaMemcpy(out_P, imgState.ray_P, width * height * sizeof(float), cudaMemcpyDeviceToDevice), debug);
+	CHECK_CUDA(cudaMemcpy(out_M, imgState.ray_M, width * height * sizeof(float)*3, cudaMemcpyDeviceToDevice), debug);
+
 	return num_rendered;
 }
 
@@ -368,8 +395,8 @@ void CudaRasterizer::Rasterizer::backward(
 	const float *means3D,
 	const float *shs,
 	const float *colors_precomp,
-	const float* alphas,
 	const float *language_feature_precomp,
+	const float *alphas,
 	const float *scales,
 	const float scale_modifier,
 	const float *rotations,
@@ -383,21 +410,28 @@ void CudaRasterizer::Rasterizer::backward(
 	char *binning_buffer,
 	char *img_buffer,
 	const float *dL_dpix,
-	const float* dL_dpix_depth,
-	const float* dL_dalphas,
 	const float *dL_dpix_F,
+	const float *dL_dpix_depth,
+	const float *dL_dalphas,
+	const float* dL_dnormals,
+	const float* dL_ddistortion,
+	const float* dL_dP,
+	const float* dL_dM,
 	float *dL_dmean2D,
 	float *dL_dconic,
 	float *dL_dopacity,
 	float *dL_dcolor,
-	float* dL_ddepth,
 	float *dL_dlanguage_feature,
+	float *dL_ddepth,
 	float *dL_dmean3D,
 	float *dL_dcov3D,
 	float *dL_dsh,
 	float *dL_dscale,
 	float *dL_drot,
+	float *dL_dA,
+	float *dL_dc_margin,
 	bool debug,
+	float *Ld_value,
 	bool include_feature)
 {
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
@@ -419,36 +453,55 @@ void CudaRasterizer::Rasterizer::backward(
 	// opacity and RGB of Gaussians from per-pixel loss gradients.
 	// If we were given precomputed colors and not SHs, use them.
 	const float *color_ptr = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
-	const float* depth_ptr = geomState.depths;
+	const float *depth_ptr = geomState.depths;
 	const float *language_feature_ptr = language_feature_precomp;
-	// std::cout <<"Language_feature_ptr:" <<  *language_feature_ptr << '\n';
-	// std::cout << "language feature ptr" << '\n';
 
 	CHECK_CUDA(BACKWARD::render(
 				   tile_grid,
 				   block,
 				   imgState.ranges,
 				   binningState.point_list,
+				   means3D,
+				   viewmatrix,
 				   width, height,
+				   focal_x, focal_y,
 				   background,
 				   geomState.means2D,
 				   geomState.conic_opacity,
 				   color_ptr,
+				   language_feature_ptr,
 				   depth_ptr,
 				   alphas,
-				   language_feature_ptr,
-				//    imgState.accum_alpha,
+				   geomState.STuv,
+				   (glm::vec3 *)scales,
+				   (glm::vec4 *)rotations,
+				   geomState.A,
+				   geomState.normal,
+				   imgState.ray_P,
+				   imgState.ray_Q,
+				   imgState.ray_Q2Q,
 				   imgState.n_contrib,
+				   imgState.depth_contrib,
 				   dL_dpix,
-					dL_dpix_depth,
-					dL_dalphas,
 				   dL_dpix_F,
+				   dL_dpix_depth,
+				   dL_dalphas,
+				   dL_dnormals,
+				   dL_ddistortion,
+				   dL_dP,
+				   dL_dM,
 				   (float3 *)dL_dmean2D,
 				   (float4 *)dL_dconic,
 				   dL_dopacity,
 				   dL_dcolor,
-				   dL_ddepth,
 				   dL_dlanguage_feature,
+				   dL_ddepth,
+				   dL_dA,
+				   (float2 *)dL_dc_margin,
+				   (glm::vec3 *)dL_dmean3D,
+				   (glm::vec3 *)dL_dscale,
+				   (glm::vec4 *)dL_drot,
+				   Ld_value,
 				   include_feature),
 			   debug)
 
@@ -470,6 +523,8 @@ void CudaRasterizer::Rasterizer::backward(
 									focal_x, focal_y,
 									tan_fovx, tan_fovy,
 									(glm::vec3 *)campos,
+									dL_dA,
+									(float2 *)dL_dc_margin,
 									(float3 *)dL_dmean2D,
 									dL_dconic,
 									(glm::vec3 *)dL_dmean3D,

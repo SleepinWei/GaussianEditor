@@ -278,12 +278,14 @@ class GaussianModel:
                 self.spatial_lr_scale,
             ) = model_args
             # ZYW: include_feature 表示训练时是否要包含 feature
-            self.training_setup(training_args,additional=additional) # ZYW: 为什么注释了，在哪里调用
-            if not training_args.include_feature:
-                try:
-                    self.optimizer.load_state_dict(opt_dict) # 应该是在判断 是否重新开始训练
-                except:
-                    print("[WARNING]restore(): Gaussian checkpoint restore error. May be an issue with appearance embeding")
+
+        self.training_setup(training_args,additional=additional) # ZYW: 为什么注释了，在哪里调用
+        if len(model_args) == 12 and not training_args.include_feature:
+            try:
+                self.optimizer.load_state_dict(opt_dict) # 应该是在判断 是否重新开始训练
+            except:
+                print("[WARNING]restore(): Gaussian checkpoint restore error. May be an issue with appearance embeding")
+
         # pytorch lightning 有个 restore_training_state() 的函数，可能在那里调用了
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
@@ -567,7 +569,7 @@ class GaussianModel:
             l.append("rot_{}".format(i))
         return l
 
-    def save_ply(self, path):
+    def save_ply(self, path, include_feature):
         mkdir_p(os.path.dirname(path))
 
         xyz = self._xyz.detach().cpu().numpy()
@@ -592,14 +594,24 @@ class GaussianModel:
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
 
+        list_of_attributes = self.construct_list_of_attributes()
+        if include_feature:
+            for i in range(self._language_feature.shape[1]):
+                list_of_attributes.append("language_{}".format(i))
+
         dtype_full = [
-            (attribute, "f4") for attribute in self.construct_list_of_attributes()
+            (attribute, "f4") for attribute in list_of_attributes
         ]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
         attributes = np.concatenate(
             (xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1
         )
+
+        if include_feature:
+            lang_feat = self._language_feature.detach().cpu().numpy()
+            attributes = np.concatenate((attributes,lang_feat),axis=1)
+
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, "vertex")
         PlyData([el]).write(path)
@@ -629,6 +641,16 @@ class GaussianModel:
         features_dc[:, 0, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
         features_dc[:, 1, 0] = np.asarray(plydata.elements[0]["f_dc_1"])
         features_dc[:, 2, 0] = np.asarray(plydata.elements[0]["f_dc_2"])
+
+        if "language_0" in plydata.elements[0]:
+            include_feature = True
+        else:
+            include_feature = False
+        if include_feature:
+            language_features = np.zeros((xyz.shape[0],3))
+            language_features[:,0] = np.asarray(plydata.elements[0]["language_0"])
+            language_features[:,1] = np.asarray(plydata.elements[0]["language_1"])
+            language_features[:,2] = np.asarray(plydata.elements[0]["language_2"])
 
         extra_f_names = [
             p.name
@@ -690,6 +712,8 @@ class GaussianModel:
         self._rotation = nn.Parameter(
             torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True)
         )
+        if include_feature:
+            self._language_feature = nn.Parameter(torch.tensor(language_features,dtype=torch.float,device="cuda"))
 
         self.active_sh_degree = self.max_sh_degree
         self._generation = torch.zeros(

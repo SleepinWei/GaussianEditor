@@ -21,7 +21,8 @@ class InstructPix2PixGuidance(BaseObject):
     class Config(BaseObject.Config):
         cache_dir: Optional[str] = None
         ddim_scheduler_name_or_path: str = "runwayml/stable-diffusion-v1-5"
-        ip2p_name_or_path: str = "vinesmsuic/magicbrush-jul7" # "timbrooks/instruct-pix2pix"
+        # ip2p_name_or_path: str = "vinesmsuic/magicbrush-jul7"
+        ip2p_name_or_path: str = "timbrooks/instruct-pix2pix"
 
         enable_memory_efficient_attention: bool = False
         enable_sequential_cpu_offload: bool = False

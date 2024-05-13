@@ -18,9 +18,12 @@ from diff_gaussian_rasterization import (
 from gaussiansplatting.utils.sh_utils import eval_sh
 
 
-def camera2rasterizer(viewpoint_camera, bg_color: torch.Tensor, include_feature, sh_degree: int = 0):
+def camera2rasterizer(viewpoint_camera, bg_color: torch.Tensor, include_feature, sh_degree: int = 0,Ld_value = None):
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+
+    if Ld_value is None:
+        Ld_value = torch.zeros(1, 3, dtype=torch.float32, device="cuda")
 
     raster_settings = GaussianRasterizationSettings(
         image_height=int(viewpoint_camera.image_height),
@@ -35,8 +38,8 @@ def camera2rasterizer(viewpoint_camera, bg_color: torch.Tensor, include_feature,
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=False,
-        # include_feature=include_feature
-        Ld_value=Ld_value
+        Ld_value=Ld_value,
+        include_feature=include_feature
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -49,7 +52,7 @@ def render(
     pc,
     pipe,
     bg_color: torch.Tensor,
-    include_feature =False, # ZYW: default include_feature
+    include_feature, # ZYW: default include_feature
     scaling_modifier=1.0,
     override_color=None,
     sky=None,
@@ -92,8 +95,8 @@ def render(
         campos=viewpoint_camera.camera_center,
         prefiltered=False,
         debug=True, # ZYW DEBUG 
-        # include_feature=include_feature
-        Ld_value=Ld_value
+        Ld_value=Ld_value,
+        include_feature=include_feature
     )
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -163,7 +166,7 @@ def render(
     )
     # rendered_image, language_feature_image, depth, alpha,radii= values
     # rendered_image, radii, depth, alpha, normal, ray_P, ray_M = values
-    rendered_image, radii, depth, alpha, normal, distortion, ray_P, ray_M = values
+    rendered_image, language_feature_image, radii, depth, alpha, normal, distortion, ray_P, ray_M = values
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
     if pipe.enable_sky and sky is not None:
@@ -188,7 +191,7 @@ def render(
 
     return {
         "render": rendered_image,
-        # "language_feature_image": language_feature_image,
+        "language_feature_image": language_feature_image,
         "normal" : normal, 
         "viewspace_points": screenspace_points,
         "visibility_filter": radii > 0,

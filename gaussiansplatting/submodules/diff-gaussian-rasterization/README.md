@@ -1,9 +1,22 @@
-# langsplat-rasterization
+# Differential Gaussian Rasterization
 
-Used as the rasterization engine for the paper "LangSplat: 3D Language Gaussian Splatting " (Arxiv 2024). This repo is based on [Differential Gaussian Rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization). If you can make use of it in your own research, please be so kind to cite us and [Differential Gaussian Rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization).
+**NOTE**: this is a modified version to support depth & alpha rendering (both forward and backward) from the [original repository](https://github.com/graphdeco-inria/diff-gaussian-rasterization). 
+
+```python
+rendered_image, radii, rendered_depth, rendered_alpha = rasterizer(
+    means3D=means3D,
+    means2D=means2D,
+    shs=shs,
+    colors_precomp=colors_precomp,
+    opacities=opacity,
+    scales=scales,
+    rotations=rotations,
+    cov3D_precomp=cov3D_precomp,
+)
+```
 
 
-
+Used as the rasterization engine for the paper "3D Gaussian Splatting for Real-Time Rendering of Radiance Fields". If you can make use of it in your own research, please be so kind to cite us.
 
 <section class="section" id="BibTeX">
   <div class="container is-max-desktop content">

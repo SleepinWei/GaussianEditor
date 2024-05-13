@@ -71,7 +71,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ]
     gaussians.training_setup(opt,additional=additional)
 
-    if checkpoint:
+    if checkpoint and checkpoint.endswith("pth"):
+        print("[INFO] using pth checkpoint")
         (model_params, first_iter) = torch.load(checkpoint)
         additional = []
 
@@ -106,7 +107,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ])
 
         gaussians.restore(model_params, opt,additional=additional)
-    
+    elif checkpoint.endswith("ply"):
+        print("[INFO] using ply file")
+        gaussians.load_ply(checkpoint)
+        gaussians.training_setup(opt,additional)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -151,59 +155,73 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Render
         if (iteration - 1) == debug_from:
             pipe.debug = True
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background,sky=sky,Ld_value=Ld_value)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background,sky=sky,Ld_value=Ld_value,include_feature=opt.include_feature)
         # image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         image, viewspace_point_tensor, visibility_filter, radii, depth, distortion, ray_P, ray_M, blend_normal = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["depth_3dgs"], render_pkg["distortion"], render_pkg["ray_P"], render_pkg["ray_M"], render_pkg["normal"]
         opacity = render_pkg["opacity"]
-        # normal = render_pkg["normal"]
-        # depth = render_pkg["depth_3dgs"]
+        language_feature = render_pkg["language_feature"]
 
-        # ray_M, ray_P = render_pkg["ray_M"], render_pkg["ray_P"]
-        ray_P.retain_grad()
-        ray_M.retain_grad()
-        depth.retain_grad()
+        if opt.include_feature:
+            gt_language_feature, language_feature_mask = viewpoint_cam.get_language_feature(language_feature_dir=dataset.lf_path, feature_level=dataset.feature_level)
+            Ll1 = l1_loss(language_feature*language_feature_mask, gt_language_feature*language_feature_mask)            
+            loss = Ll1
+            loss_dict = {
+                "l1":Ll1,
+            }
+        else:
+            ray_P.retain_grad()
+            ray_M.retain_grad()
+            depth.retain_grad()
 
-        # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
-        ground_mask = ~viewpoint_cam.mask.cuda() # ZYW DEBUG
+            # Loss
+            gt_image = viewpoint_cam.original_image.cuda()
+            ground_mask = ~viewpoint_cam.mask.cuda() # ZYW DEBUG
 
-        newdepth = torch.clamp(depth, 0.1)
-        newdepth.retain_grad()
+            newdepth = torch.clamp(depth, 0.1)
+            newdepth.retain_grad()
 
-        # fx = fov2focal(viewpoint_cam.FoVx, viewpoint_cam.image_width)
-        # fy = fov2focal(viewpoint_cam.FoVy, viewpoint_cam.image_height)
-        # Ln, depth_norm, loss_map = norm_loss(ray_P, ray_M, newdepth, fx, fy, viewpoint_cam.image_width, viewpoint_cam.image_height)
-        # random crop 
-        # if opt.random_crop == 1:
-        #     crop_width = min(opt.crop_width,image.shape[2])
-        #     if opt.crop_width >= image.shape[2]: 
-        #         x_start = 0
-        #     else:
-        #         x_start = torch.randint(low=0,high=image.shape[2]-crop_width,size=(1,))
-        #     crop_mask = torch.zeros_like(ground_mask,dtype=torch.bool)
-        #     crop_mask[:,:,x_start:min(x_start + crop_width,image.shape[2])] = True
-        #     ground_mask = torch.logical_and(ground_mask, crop_mask)
+            # fx = fov2focal(viewpoint_cam.FoVx, viewpoint_cam.image_width)
+            # fy = fov2focal(viewpoint_cam.FoVy, viewpoint_cam.image_height)
+            # Ln, depth_norm, loss_map = norm_loss(ray_P, ray_M, newdepth, fx, fy, viewpoint_cam.image_width, viewpoint_cam.image_height)
+            # random crop 
+            # if opt.random_crop == 1:
+            #     crop_width = min(opt.crop_width,image.shape[2])
+            #     if opt.crop_width >= image.shape[2]: 
+            #         x_start = 0
+            #     else:
+            #         x_start = torch.randint(low=0,high=image.shape[2]-crop_width,size=(1,))
+            #     crop_mask = torch.zeros_like(ground_mask,dtype=torch.bool)
+            #     crop_mask[:,:,x_start:min(x_start + crop_width,image.shape[2])] = True
+            #     ground_mask = torch.logical_and(ground_mask, crop_mask)
 
-        appearance_transform = 1
-        if opt.appearance_embedding:
-            appearance_transform = CNN(image,appearance_embeddings[viewpoint_cam.uid,:])
+            appearance_transform = 1
+            if opt.appearance_embedding:
+                appearance_transform = CNN(image,appearance_embeddings[viewpoint_cam.uid,:])
 
-        Ll1 = l1_loss(appearance_transform * image, gt_image,ground_mask)
-        Ssim = ssim(image, gt_image,ground_mask)
-        Lopacity = l1_loss(ground_mask[0,:,:].float(),opacity)
-        # Ll1 = l2_loss(image, gt_image,ground_mask)
-        Laniso = L_aniso(gaussians.get_scaling,opt.max_scale_ratio)
+            Ll1 = l1_loss(appearance_transform * image, gt_image,ground_mask)
+            Ssim = ssim(image, gt_image,ground_mask)
+            Lopacity = l1_loss(ground_mask[0,:,:].float(),opacity)
+            # Ll1 = l2_loss(image, gt_image,ground_mask)
+            Laniso = L_aniso(gaussians.get_scaling,opt.max_scale_ratio)
 
-        gt_exp_neg_grad = get_edge_map(gt_image)
-        Ln, depth_norm, loss_map = normal_loss_2DGS(ray_P, ray_M, newdepth, viewpoint_cam)
-        Ld = (distortion * gt_exp_neg_grad).mean()
-        
-        if torch.isnan(Ln):
-            print("Nan Loss")
+            gt_exp_neg_grad = get_edge_map(gt_image)
+            Ln, depth_norm, loss_map = normal_loss_2DGS(ray_P, ray_M, newdepth, viewpoint_cam)
+            Ld = (distortion * gt_exp_neg_grad).mean()
+            
+            if torch.isnan(Ln):
+                print("Nan Loss")
 
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - Ssim) \
-            + opt.lambda_Laniso * Laniso + opt.lambda_Lopacity * Lopacity \
-            + 0.05 * Ln + 100 * Ld
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - Ssim) \
+                + opt.lambda_Laniso * Laniso + opt.lambda_Lopacity * Lopacity \
+                + 0.05 * Ln + 100 * Ld
+                        # Log and save
+            loss_dict = {
+                "l1":Ll1,
+                "total_loss":loss,
+                "Ln":Ln,
+                "Ld":Ld,
+                "ssim":Ssim,
+            }
         
         loss.backward()
 
@@ -220,9 +238,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
-                torch.save(appearance_embeddings,scene.model_path + "/chkpnt" + str(iteration) + "_embeddings.pth")
-                torch.save(CNN.state_dict(),scene.model_path + "/chkpnt" + str(iteration) + "_cnn.pth")
-                torch.save(sky.state_dict(),scene.model_path + "/chkpnt" + str(iteration) + "_sky.pth")
+                if opt.appearance_embedding: 
+                    torch.save(appearance_embeddings,scene.model_path + "/chkpnt" + str(iteration) + "_embeddings.pth")
+                    torch.save(CNN.state_dict(),scene.model_path + "/chkpnt" + str(iteration) + "_cnn.pth")
+                if pipe.enable_sky:
+                    torch.save(sky.state_dict(),scene.model_path + "/chkpnt" + str(iteration) + "_sky.pth")
 
             if iteration % 10 == 0:
                 progress_bar.set_postfix({
@@ -251,21 +271,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration == opt.iterations:
                 progress_bar.close()
 
-            # Log and save
-            loss_dict = {
-                "l1":Ll1,
-                "total_loss":loss,
-                "Ln":Ln,
-                "Ld":Ld,
-                "ssim":Ssim,
-            }
-            training_report(tb_writer, iteration,loss_dict, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+
+            training_report(tb_writer, iteration,loss_dict, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
-                scene.save(iteration)
+                scene.save(iteration,opt.include_feature)
 
             # Densification
-            if iteration < opt.densify_until_iter:
+            if not opt.include_feature and iteration < opt.densify_until_iter:
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
@@ -285,12 +298,24 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
 
-            if (iteration % 2000 == 1999):
-                for id,viewpoint_cam in enumerate(tqdm(scene.getTrainCameras().copy())):
-                    render_pkg = render(viewpoint_cam, gaussians, pipe, background,sky=sky)
+            if not opt.include_feature and (iteration % 2000 == 1999):
+                l1_test = 0.0
+                psnr_test = 0.0
+                train_cams = scene.getTrainCameras().copy()
+                for id,viewpoint_cam in enumerate(tqdm(train_cams)):
+                    render_pkg = render(viewpoint_cam, gaussians, pipe, background,sky=sky,include_feature=opt.include_feature)
                     image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
                     ts.save(image,os.path.join(f"{dataset.model_path}/train_view",f"{id}.png"))
                     ts.save(render_pkg["normal"] * 0.5 + 0.5,os.path.join(f"{dataset.model_path}/train_view",f"{id}_normal.png"))
+                    l1_test += l1_loss(image, gt_image).mean().double()
+                    psnr_test += psnr(image, gt_image).mean().double()
+                psnr_test /= len(train_cams)
+                l1_test /= len(train_cams)
+                print("\n[ITER {}] Evaluating: L1 {} PSNR {}".format(iteration, l1_test, psnr_test))
+                if tb_writer:
+                    tb_writer.add_scalar('/loss_viewpoint - l1_loss', l1_test, iteration)
+                    tb_writer.add_scalar('/loss_viewpoint - psnr', psnr_test, iteration)
+                
 
 def prepare_output_and_logger(args,opt):    
     if not args.model_path:
@@ -308,23 +333,10 @@ def prepare_output_and_logger(args,opt):
     os.makedirs(os.path.join(args.model_path,"train_view"))
     import json
     with open(os.path.join(args.model_path, "cfg_args.json"), 'w') as cfg_log_f:
-        # cfg_log_f.write(str(Namespace(**vars(args))))
         json.dump({
             "dataset":args.__dict__,
             "opt":opt.__dict__
         },cfg_log_f,indent=4)
-        # cfg_log_f.write(str(args.__dict__))
-        # cfg_log_f.write("\n")
-        # model_args = opt.__dict__
-        # model_args = {
-            # "iterations":opt.iterations,
-            # "densify_until_iter":opt.densify_until_iter,
-            # "densify_from_iter":opt.densify_from_iter,
-            # "densification_interval":opt.densification_interval,
-            # "position_lr_init":opt.position_lr_init,
-            # "scaling_lr":opt.scaling_lr
-        # }
-        # cfg_log_f.write(str(model_args))
 
     # Create Tensorboard writer
     tb_writer = None
@@ -334,7 +346,7 @@ def prepare_output_and_logger(args,opt):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
-def training_report(tb_writer, iteration, loss_dict:dict, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+def training_report(tb_writer, iteration, loss_dict:dict, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
     if tb_writer:
         for k,v in loss_dict.items():
             tb_writer.add_scalar(f'train_loss_patches/{k}', v.item(), iteration)
@@ -344,28 +356,28 @@ def training_report(tb_writer, iteration, loss_dict:dict, Ll1, loss, l1_loss, el
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
+        # validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
+        #                       {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
 
-        for config in validation_configs:
-            if config['cameras'] and len(config['cameras']) > 0:
-                l1_test = 0.0
-                psnr_test = 0.0
-                for idx, viewpoint in enumerate(config['cameras']):
-                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
-                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    if tb_writer and (idx < 5):
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
-                        if iteration == testing_iterations[0]:
-                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    psnr_test += psnr(image, gt_image).mean().double()
-                psnr_test /= len(config['cameras'])
-                l1_test /= len(config['cameras'])          
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-                if tb_writer:
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+        # for config in validation_configs:
+        #     if config['cameras'] and len(config['cameras']) > 0:
+        #         l1_test = 0.0
+        #         psnr_test = 0.0
+        #         for idx, viewpoint in enumerate(config['cameras']):
+        #             image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
+        #             gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+        #             # if tb_writer and (idx < 5):
+        #                 # tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
+        #                 # if iteration == testing_iterations[0]:
+        #                     # tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
+        #             l1_test += l1_loss(image, gt_image).mean().double()
+        #             psnr_test += psnr(image, gt_image).mean().double()
+        #         psnr_test /= len(config['cameras'])
+        #         l1_test /= len(config['cameras'])          
+        #         print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+        #         if tb_writer:
+        #             tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
+        #             tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
 
         if tb_writer:
             tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)

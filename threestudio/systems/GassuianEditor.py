@@ -299,7 +299,7 @@ class GaussianEditor(BaseLift3DSystem):
         for idx in range(len(batch["index"])):
             cam_index = batch["index"][idx].item()
             self.save_image_grid(
-                f"it{self.true_global_step}-{batch['index'][idx]}.png",
+                f"it-{batch['index'][idx]}.png",
                 (
                     [
                         {
@@ -320,7 +320,7 @@ class GaussianEditor(BaseLift3DSystem):
                 step=self.true_global_step,
             )
             self.save_image_grid(
-                f"render_it{self.true_global_step}-{batch['index'][idx]}.png",
+                f"render_it-{batch['index'][idx]}.png",
                 [
                     {
                         "type": "rgb",
@@ -454,6 +454,7 @@ class GaussianEditor(BaseLift3DSystem):
             step=self.true_global_step,
         )
         save_list = []
+        os.makedirs(os.path.join(self.get_save_dir(),"edited_images"),exist_ok=True)
         for index, image in sorted(self.edit_frames.items(), key=lambda item: item[0]):
             save_list.append(
                 {
@@ -462,14 +463,19 @@ class GaussianEditor(BaseLift3DSystem):
                     "kwargs": {"data_format": "HWC"},
                 },
             )
-        if len(save_list) > 0:
-            self.save_image_grid(
-                f"edited_images.png",
-                save_list,
-                name="edited_images",
-                step=self.true_global_step,
-            )
+            img = Image.fromarray(np.uint8(image[0].cpu().numpy()*255),mode="RGB")
+            img.save(os.path.join(self.get_save_dir(),"edited_images",f"{index}.jpg"))
+
+        # if len(save_list) > 0:
+            # for idx,im in enumerate(save_list):
+            # self.save_image_grid(
+                # f"edited_images.png",
+                # save_list,
+                # name="edited_images",
+                # step=self.true_global_step,
+            # )
         save_list = []
+        os.makedirs(os.path.join(self.get_save_dir(),"original_images"))
         for index, image in sorted(
                 self.origin_frames.items(), key=lambda item: item[0]
         ):
@@ -480,12 +486,13 @@ class GaussianEditor(BaseLift3DSystem):
                     "kwargs": {"data_format": "HWC"},
                 },
             )
-        self.save_image_grid(
-            f"origin_images.png",
-            save_list,
-            name="origin",
-            step=self.true_global_step,
-        )
+            Image.fromarray(np.uint8(image[0].cpu().numpy()*255),mode="RGB").save(os.path.join(self.get_save_dir(),"original_images",f"{index}.jpg"))
+        # self.save_image_grid(
+        #     f"origin_images.png",
+        #     save_list,
+        #     name="origin",
+        #     step=self.true_global_step,
+        # )
 
         save_path = self.get_save_path(f"last.ply")
         self.gaussian.save_ply(save_path)
@@ -505,7 +512,7 @@ class GaussianEditor(BaseLift3DSystem):
         self.cameras_extent = self.trainer.datamodule.train_dataset.scene.cameras_extent
         self.gaussian.spatial_lr_scale = self.cameras_extent
 
-        self.pipe = PipelineParams(self.parser)
+        self.pipe = PipelineParams(self.parser,enable_sky=1)
         opt = OmegaConf.create(vars(opt))
         opt.update(self.cfg.training_args)
         # opt.update(self.cfg.__dict__)

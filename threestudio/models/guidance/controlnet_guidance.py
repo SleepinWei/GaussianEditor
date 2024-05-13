@@ -22,7 +22,8 @@ class ControlNetGuidance(BaseObject):
     @dataclass
     class Config(BaseObject.Config):
         cache_dir: Optional[str] = None
-        pretrained_model_name_or_path: str = "SG161222/Realistic_Vision_V2.0"
+        # pretrained_model_name_or_path: str = "SG161222/Realistic_Vision_V2.0"
+        pretrained_model_name_or_path: str = "SG161222/Realistic_Vision_V6.0_B1_noVAE"
         ddim_scheduler_name_or_path: str = "runwayml/stable-diffusion-v1-5"
         control_type: str = "normal"  # normal/canny
 

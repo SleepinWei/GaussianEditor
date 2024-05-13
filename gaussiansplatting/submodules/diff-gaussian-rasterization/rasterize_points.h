@@ -15,13 +15,13 @@
 #include <tuple>
 #include <string>
 	
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor,  torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
     const torch::Tensor& colors,
-	const torch::Tensor& language_feature,
     const torch::Tensor& opacity,
+	const torch::Tensor& language_feature,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
 	const float scale_modifier,
@@ -37,7 +37,8 @@ RasterizeGaussiansCUDA(
 	const torch::Tensor& campos,
 	const bool prefiltered,
 	const bool debug,
-	const bool include_feature);
+	const bool include_feature
+	);
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(
@@ -55,9 +56,13 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const float tan_fovx, 
 	const float tan_fovy,
     const torch::Tensor& dL_dout_color,
+	const torch::Tensor& dL_dout_language_feature,
 	const torch::Tensor& dL_dout_depth,
 	const torch::Tensor& dL_dout_alpha,
-	const torch::Tensor& dL_dout_language_feature,
+	const torch::Tensor& dL_dout_normal,
+	const torch::Tensor& dL_dout_distortion,
+	const torch::Tensor& dL_dout_P,
+	const torch::Tensor& dL_dout_M,
 	const torch::Tensor& sh,
 	const int degree,
 	const torch::Tensor& campos,
@@ -67,6 +72,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const torch::Tensor& imageBuffer,
 	const torch::Tensor& alpha,
 	const bool debug,
+	const torch::Tensor& Ld_value,
 	const bool include_feature);
 		
 torch::Tensor markVisible(
