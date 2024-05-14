@@ -52,12 +52,15 @@ def training(gs_source,dataset, opt, pipe,angle_degs, testing_iterations, saving
             save_folder = os.path.join("/home/zhuyunwei/GaussianEditor/gaussiansplatting/vis/pseudo",str(int(angle_deg)))
             os.makedirs(save_folder,exist_ok=True)
             for id,viewpoint_cam in enumerate(tqdm(viewpoint_stack)):
-                render_pkg = render(viewpoint_cam, gaussians, pipe, background,sky=sky)
+                render_pkg = render(viewpoint_cam, gaussians, pipe, background,sky=sky,include_feature=opt.include_feature)
                 image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+                lang_feat_img = render_pkg["language_feature_image"]
                 # ts.save(image,os.path.join("/home/zhuyunwei/GaussianEditor/gaussiansplatting/vis/pseudo",f"{id}_{int(angle / np.pi * 180)}.jpg"))
                 save_image(image,os.path.join(save_folder,f"{id}.jpg"))
                 save_image(render_pkg["normal"] / torch.norm(render_pkg["normal"],dim=0,keepdim=True) * 0.5 + 0.5 ,os.path.join(save_folder,f"{id}_normal.jpg"))
                 save_image(viewpoint_cam.original_image,os.path.join(save_folder,f"{id}_gt.jpg"))
+                save_image(lang_feat_img,os.path.join(save_folder,f"{id}_lang.jpg"))
+
                 depth = render_pkg["depth_3dgs"]
                 depth = 1 - torch.exp(-depth/20)
                 # depth = depth / (depth.max() + 1e-5)

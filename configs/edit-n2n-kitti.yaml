@@ -2,6 +2,7 @@ name: "edit-n2n-kitti"
 tag: "${rmspace:${system.prompt_processor.prompt},_}"
 exp_root_dir: "outputs"
 seed: 0
+# resume: "/home/zhuyunwei/GaussianEditor/outputs/edit-n2n-kitti/make_it_snowy@20240514-202642/ckpts/epoch=0-step=6000.ckpt"
  
 data_type: "gs-load-kitti"
 data:
@@ -20,7 +21,7 @@ data:
   chunk_id: 22
   # elevation_range: [-10 , 80]
 trainer:
-  max_steps: 6000
+  max_steps: 10000
   log_every_n_steps: 10
   num_sanity_val_steps: 0
   val_check_interval: 20
@@ -29,7 +30,7 @@ trainer:
 system_type: "gsedit-system-edit"
 system:
   gs_source: "/home/zhuyunwei/GaussianEditor/gaussiansplatting/output/20240510_221252_save/point_cloud/iteration_50000/point_cloud.ply"
-  sky_source: "/home/zhuyunwei/GaussianEditor/gaussiansplatting/output/20240510_221252_save/chkpnt50000_sky.pth"
+  sky_source: "/home/zhuyunwei/GaussianEditor/gaussiansplatting/sky_ckpt/sky.pth"
 
   per_editing_step: 10
   edit_begin_step: 0
@@ -39,7 +40,7 @@ system:
   densification_interval: 1500
   max_grad: 5
   min_opacity: 0.005
-  seg_prompt: ""
+  seg_prompt: "car"
   prompt_processor_type: "stable-diffusion-prompt-processor"
   prompt_processor:
     pretrained_model_name_or_path: "runwayml/stable-diffusion-v1-5"

@@ -495,7 +495,7 @@ class GaussianEditor(BaseLift3DSystem):
         # )
 
         save_path = self.get_save_path(f"last.ply")
-        self.gaussian.save_ply(save_path)
+        self.gaussian.save_ply(save_path,False)
 
     def configure_optimizers(self):
         self.parser = ArgumentParser(description="Training script parameters")

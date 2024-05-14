@@ -141,7 +141,8 @@ RasterizeGaussiansCUDA(
 			out_P.contiguous().data<float>(),
 			out_M.contiguous().data<float>(),
 			radii.contiguous().data<int>(),
-			debug);
+			debug,
+			include_feature);
 	}
 	return std::make_tuple(rendered, out_color, out_language_feature, out_depth, out_alpha, out_normal, out_distortion, radii, geomBuffer, binningBuffer, imgBuffer, out_P, out_M);
 }

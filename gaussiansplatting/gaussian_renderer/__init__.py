@@ -140,8 +140,8 @@ def render(
     
     if include_feature:
         language_feature_precomp = pc.get_language_feature
-        language_feature_precomp = language_feature_precomp / \
-            (language_feature_precomp.norm(dim=-1, keepdim=True) + 1e-9)
+        # language_feature_precomp = language_feature_precomp / \
+        #     (language_feature_precomp.norm(dim=-1, keepdim=True) + 1e-9)
         # language_feature_precomp = torch.sigmoid(language_feature_precomp)
     else:
         if shs is not None: # ZYW DEBUG when rendering semantic map, shs = None
@@ -158,7 +158,7 @@ def render(
         means2D=means2D,
         shs=shs,
         colors_precomp=colors_precomp,
-        # language_feature_precomp=language_feature_precomp,
+        language_feature_precomp=language_feature_precomp,
         opacities=opacity,
         scales=scales,
         rotations=rotations,

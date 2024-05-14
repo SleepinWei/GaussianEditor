@@ -277,7 +277,6 @@ class GaussianModel:
                 opt_dict,
                 self.spatial_lr_scale,
             ) = model_args
-            # ZYW: include_feature 表示训练时是否要包含 feature
 
         self.training_setup(training_args,additional=additional) # ZYW: 为什么注释了，在哪里调用
         if len(model_args) == 12 and not training_args.include_feature:
@@ -473,7 +472,7 @@ class GaussianModel:
         if training_args.include_feature:
             if self._language_feature is None or self._language_feature.shape[0] != self._xyz.shape[0]:
                 # 开始feature训练的时候，往模型中加入language feature参数
-                language_feature = torch.zeros((self._xyz.shape[0], 3), device="cuda")
+                language_feature = torch.randn((self._xyz.shape[0], 3), device="cuda")
                 self._language_feature = nn.Parameter(language_feature.requires_grad_(True))
                 
             l = [

@@ -59,19 +59,17 @@ class Camera(nn.Module):
         self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1).cuda()
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
+        self.language_features = {}
 
     def get_language_feature(self, language_feature_dir, feature_level):
+        if feature_level in self.language_features:
+            point_feature, mask = self.language_features[feature_level]
+            return point_feature.cuda(),mask.cuda()
+
         language_feature_name = os.path.join(language_feature_dir, self.image_name)
         seg_map = torch.from_numpy(np.load(language_feature_name + '_s.npy'))
         feature_map = torch.from_numpy(np.load(language_feature_name + '_f.npy'))
-        
-        # elif str(language_feature_name).split('.')[-1] == 'pkl':
-        #     with open(language_feature_name, 'rb') as f:
-        #         data = pickle.load(f)
-        #     seg_map = data['seg_maps']
-        #     feature_tensor = data['feature']
-        # print(seg_map.shape, feature_tensor.shape)torch.Size([4, 832, 1264]) torch.Size([391, 512])
-        # feature_map = torch.zeros(512, self.image_height, self.image_width)
+
         y, x = torch.meshgrid(torch.arange(0, self.image_height), torch.arange(0, self.image_width))
         x = x.reshape(-1, 1)
         y = y.reshape(-1, 1)
@@ -92,7 +90,10 @@ class Camera(nn.Module):
         else:
             raise ValueError("feature_level=", feature_level)
         # point_feature = torch.cat((point_feature2, point_feature3, point_feature4), dim=-1).to('cuda')
+        # record
         point_feature = point_feature1.reshape(self.image_height, self.image_width, -1).permute(2, 0, 1)
+
+        self.language_features[feature_level] = (point_feature,mask)
        
         return point_feature.cuda(), mask.cuda()
 

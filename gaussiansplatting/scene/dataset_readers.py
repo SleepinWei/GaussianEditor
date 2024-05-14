@@ -617,7 +617,7 @@ def readCamerasFromTransforms_KITTI(kitti_data: KITTI360, cam_ids, white_backgro
 
 
         cam_infos.append(CameraInfo(uid=int(cam_id), R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                        image_path=image_path, image_name=int(cam_id), width=image.size[0], height=image.size[1],
+                        image_path=image_path, image_name=f"{image_name:010d}", width=image.size[0], height=image.size[1],
                         qvec=np.array([0]),mask=mask))
             
     return cam_infos

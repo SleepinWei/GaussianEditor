@@ -80,7 +80,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.sh_degree,
             raster_settings.campos,
             raster_settings.prefiltered,
-            raster_settings.debug
+            raster_settings.debug,
             raster_settings.include_feature
         )
 
@@ -125,6 +125,7 @@ class _RasterizeGaussians(torch.autograd.Function):
                 raster_settings.tanfovx, 
                 raster_settings.tanfovy, 
                 grad_color,
+                grad_out_language_feature,
                 grad_depth,
                 grad_alpha,
                 grad_normal,

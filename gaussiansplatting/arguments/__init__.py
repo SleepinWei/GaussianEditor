@@ -65,12 +65,19 @@ class ModelParams(ParamGroup):
         self.image_resize = 1.0
         self.sky_source = ""
         self.dataset_type = ""
+        self._feature_level = -1
+        self._language_features_name = "language_features_dim3"
 
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
         g = super().extract(args)
         g.source_path = os.path.abspath(g.source_path)
+
+        if g.dataset_type == "KITTI" and g.chunk_id != -1:
+            g.lf_path = os.path.join(g.source_path, "chunks", f"2013_05_28_drive_{g.seq:04d}_sync",str(g.chunk_id),g.language_features_name)
+        else:
+            g.lf_path = os.path.join(g.source_path, g.language_features_name)
         return g
 
 
@@ -93,7 +100,7 @@ class OptimizationParams(ParamGroup):
                  opacity_lr_scaler=1.0,
                  scaling_lr_scaler=1.0,
                  rotation_lr_scaler=1.0,
-                 warmup_iteration=0, include_feature=False):
+                 warmup_iteration=0, include_feature=0):
         self.iterations = max_steps
         # if warmup_iteration is None:
         #     warmup_iteration = max_steps / 10
@@ -118,6 +125,8 @@ class OptimizationParams(ParamGroup):
         self.opacity_lr = 0.05 * self.opacity_lr_scaler
         self.scaling_lr = 0.005 * self.scaling_lr_scaler
         self.rotation_lr = 0.001 * self.rotation_lr_scaler
+
+        self.language_feature_lr = 0.0025
 
         self.lambda_dssim = 0.2
         self.lambda_Laniso = 1.0

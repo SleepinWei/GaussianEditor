@@ -51,6 +51,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     from gaussiansplatting.scene.sky_model import SkyModel
     CNN = AppearanceCNN(upsample_num=4).to("cuda")
     sky = SkyModel()
+    if pipe.enable_sky:
+        if dataset.sky_source != "": 
+            sky_ckpt = dataset.sky_source
+        sky.load_state_dict(torch.load(sky_ckpt))
 
     additional = [
         {
@@ -71,46 +75,49 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ]
     gaussians.training_setup(opt,additional=additional)
 
-    if checkpoint and checkpoint.endswith("pth"):
-        print("[INFO] using pth checkpoint")
-        (model_params, first_iter) = torch.load(checkpoint)
-        additional = []
+    if checkpoint:
+        if checkpoint.endswith("pth"):
+            print("[info] using pth checkpoint")
+            (model_params, first_iter) = torch.load(checkpoint)
+            if opt.include_feature:
+                first_iter = 0
+            additional = []
 
-        if pipe.enable_sky:
-            if dataset.sky_source == "": 
-                sky_ckpt =  checkpoint.split(".")[0] + "_sky.pth"
-            else :
-                sky_ckpt = dataset.sky_source
-            sky.load_state_dict(torch.load(sky_ckpt))
-            additional.append({
-                "params": list(sky.parameters()),
-                "lr": 0.01,
-                "name": "sky",
-            })
+            if pipe.enable_sky:
+                if dataset.sky_source == "": 
+                    sky_ckpt =  checkpoint.split(".")[0] + "_sky.pth"
+                else :
+                    sky_ckpt = dataset.sky_source
+                sky.load_state_dict(torch.load(sky_ckpt))
+                additional.append({
+                    "params": list(sky.parameters()),
+                    "lr": 0.01,
+                    "name": "sky",
+                })
 
-        if opt.appearance_embedding:
-            cnn_path = checkpoint.split(".")[0] + "_cnn.pth"
-            appearance_embedding_path = checkpoint.split(".")[0] + "_embeddings.pth" 
-            CNN.load_state_dict(torch.load(cnn_path))
-            appearance_embeddings = torch.nn.Parameter(torch.load(appearance_embedding_path))
-            additional.extend([
-            {
-                "params": [appearance_embeddings],
-                "lr": 0.01,
-                "name": "appearance",
-            },
-            {
-                "params": list(CNN.parameters()),
-                "lr": 0.01,
-                "name": "cnn",
-            },
-            ])
+            if opt.appearance_embedding:
+                cnn_path = checkpoint.split(".")[0] + "_cnn.pth"
+                appearance_embedding_path = checkpoint.split(".")[0] + "_embeddings.pth" 
+                CNN.load_state_dict(torch.load(cnn_path))
+                appearance_embeddings = torch.nn.Parameter(torch.load(appearance_embedding_path))
+                additional.extend([
+                {
+                    "params": [appearance_embeddings],
+                    "lr": 0.01,
+                    "name": "appearance",
+                },
+                {
+                    "params": list(CNN.parameters()),
+                    "lr": 0.01,
+                    "name": "cnn",
+                },
+                ])
 
-        gaussians.restore(model_params, opt,additional=additional)
-    elif checkpoint.endswith("ply"):
-        print("[INFO] using ply file")
-        gaussians.load_ply(checkpoint)
-        gaussians.training_setup(opt,additional)
+            gaussians.restore(model_params, opt,additional=additional)
+        elif checkpoint.endswith("ply"):
+            print("[INFO] using ply file")
+            gaussians.load_ply(checkpoint)
+            gaussians.training_setup(opt,additional)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -159,7 +166,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         image, viewspace_point_tensor, visibility_filter, radii, depth, distortion, ray_P, ray_M, blend_normal = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["depth_3dgs"], render_pkg["distortion"], render_pkg["ray_P"], render_pkg["ray_M"], render_pkg["normal"]
         opacity = render_pkg["opacity"]
-        language_feature = render_pkg["language_feature"]
+        language_feature = render_pkg["language_feature_image"]
 
         if opt.include_feature:
             gt_language_feature, language_feature_mask = viewpoint_cam.get_language_feature(language_feature_dir=dataset.lf_path, feature_level=dataset.feature_level)
@@ -232,8 +239,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             avg_loss_for_log += loss.item() 
             avg_l1_loss_for_log += Ll1.item() 
-            avg_Ssim_for_log += Ssim.item()
-            avg_regularization_for_log += Laniso.item()
+            if not opt.include_feature:
+                avg_Ssim_for_log += Ssim.item()
+                avg_regularization_for_log += Laniso.item()
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
@@ -256,21 +264,25 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 avg_Ssim_for_log = 0.0
                 avg_regularization_for_log = 0.0
 
-            if iteration % 400 == 1:
+            if  iteration % 400 == 1:
                 import torchshow as ts
-                ts.save(image,f"{dataset.model_path}/vis/render.jpg") # DEBUG ZYW
-                ts.save(gt_image,f"{dataset.model_path}/vis/gt.jpg")
-                # ts.save(ground_mask.float(),f"{dataset.model_path}/vis/{iteration}_mask.jpg")
-                ts.save(render_pkg["normal"],os.path.join(f"{dataset.model_path}/vis",f"normal.jpg"))
-                ts.save(render_pkg["opacity"],os.path.join(f"{dataset.model_path}/vis",f"opacity.jpg"))
-                if opt.appearance_embedding:
-                    ts.save(appearance_transform,f"{dataset.model_path}/vis/transformed.jpg")
+                if not opt.include_feature:
+                    ts.save(image,f"{dataset.model_path}/vis/render.jpg") # DEBUG ZYW
+                    ts.save(gt_image,f"{dataset.model_path}/vis/gt.jpg")
+                    # ts.save(ground_mask.float(),f"{dataset.model_path}/vis/{iteration}_mask.jpg")
+                    ts.save(render_pkg["normal"],os.path.join(f"{dataset.model_path}/vis",f"normal.jpg"))
+                    ts.save(render_pkg["opacity"],os.path.join(f"{dataset.model_path}/vis",f"opacity.jpg"))
+                    if opt.appearance_embedding:
+                        ts.save(appearance_transform,f"{dataset.model_path}/vis/transformed.jpg")
+                else:
+                    ts.save(language_feature,os.path.join(f"{dataset.model_path}/vis",f"lang.jpg"))
+                    ts.save(language_feature_mask.float(),os.path.join(f"{dataset.model_path}/vis",f"lang_mask.jpg"))
+                    ts.save(gt_language_feature.float(),os.path.join(f"{dataset.model_path}/vis",f"lang_gt.jpg"))
 
                 # plot_histogram_gaussian(gaussians,f"./vis_temp/gradient_histogram_{dataset.source_path.split('/')[-1]}_{iteration}.jpg") # ZYW DEBUG
 
             if iteration == opt.iterations:
                 progress_bar.close()
-
 
             training_report(tb_writer, iteration,loss_dict, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
@@ -327,6 +339,8 @@ def prepare_output_and_logger(args,opt):
         args.model_path = os.path.join("./output/", unique_str)
         
     # Set up output folder
+    if opt.include_feature:
+        args.model_path = args.model_path + "lang"
     print("Output folder: {}".format(args.model_path))
     os.makedirs(args.model_path, exist_ok = True)
     os.makedirs(os.path.join(args.model_path,"vis"))

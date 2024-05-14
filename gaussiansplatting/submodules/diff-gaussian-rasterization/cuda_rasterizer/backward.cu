@@ -486,8 +486,10 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 			collected_rotation[block.thread_rank()] = rotation[coll_id];
 			collected_normal[block.thread_rank()] = normal[coll_id];
 
-			for (int i = 0; i < F; i++)
-				collected_feature[i * BLOCK_SIZE + block.thread_rank()] = language_feature[coll_id * F + i];
+			if(include_feature){
+				for (int i = 0; i < F; i++)
+					collected_feature[i * BLOCK_SIZE + block.thread_rank()] = language_feature[coll_id * F + i];
+			}
 		}
 		block.sync();
 
